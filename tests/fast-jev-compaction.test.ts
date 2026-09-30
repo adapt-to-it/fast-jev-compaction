@@ -11,6 +11,7 @@ import {
   fitState,
   JevClient,
   parseJevResponse,
+  questionsFor,
   reductionRatio,
   resolveOptions,
   type HistoryToolCall,
@@ -255,6 +256,29 @@ describe('question batching', () => {
   });
 });
 
+describe('questions', () => {
+  const base: ToolCall = {
+    id: 't1',
+    tool_use_id: 'tool-1',
+    tool: 'Read',
+    input: {},
+    callIndex: 1,
+    resultIndex: 2,
+    resultChars: 100,
+    isError: false,
+    pinned: false,
+  };
+
+  it('asks about the change only for tools that are not read-only', () => {
+    expect(Object.keys(questionsFor(base))).toEqual(['call_t1', 'result_t1']);
+    expect(Object.keys(questionsFor({ ...base, tool: 'Edit' }))).toEqual(['call_t1', 'result_t1', 'change_t1']);
+    expect(Object.keys(questionsFor({ ...base, tool: 'mcp__db__query' }, ['mcp__db__query']))).toEqual([
+      'call_t1',
+      'result_t1',
+    ]);
+  });
+});
+
 describe('decisions', () => {
   const options = { keepThreshold: 0.5 };
   const unpinned = { id: 't1', tool: 'Read', pinned: false };
@@ -267,6 +291,17 @@ describe('decisions', () => {
       action: 'keep',
       reason: 'pinned',
     });
+  });
+
+  it('keeps the call without its result when the task depends on what it changed', () => {
+    const edit = { id: 't1', tool: 'Edit', pinned: false };
+    expect(decideCall(edit, { keepCall: 0.2, keepResult: 0.1, keepChange: 0.9 }, options)).toMatchObject({
+      action: 'drop_result',
+      keepChange: 0.9,
+    });
+    expect(decideCall(edit, { keepCall: 0.2, keepResult: 0.1, keepChange: 0.1 }, options).action).toBe(
+      'drop_call',
+    );
   });
 
   it('removes dropped calls and truncates dropped results', () => {
@@ -344,7 +379,7 @@ describe('compact', () => {
     const output = await compact(
       messages,
       fakeJev((name) => (name.startsWith('call_') ? 0.9 : 0.1), seen),
-      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 150 },
+      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 320 },
     );
 
     expect(output.stats.requests).toBe(seen.length);
@@ -353,6 +388,7 @@ describe('compact', () => {
       'call_t1',
       'call_t2',
       'call_t3',
+      'change_t3',
       'result_t1',
       'result_t2',
       'result_t3',
@@ -362,6 +398,21 @@ describe('compact', () => {
     expect(output.messages).toHaveLength(messages.length);
     expect(output.stats).toMatchObject({ resultsDropped: 3, kept: 0, callsDropped: 0, pinned: 0 });
     expect(reductionRatio(output)).toBeGreaterThan(0);
+  });
+
+  it('keeps a changing call when Jev says the task depends on its change', async () => {
+    const seen: Seen[] = [];
+    const output = await compact(
+      transcript(),
+      fakeJev((name) => (name.startsWith('change_') ? 0.9 : 0.1), seen),
+      { preserveRecentMessages: 1 },
+    );
+    expect(seen.flatMap((r) => r.questions).filter((q) => q.startsWith('change_'))).toEqual(['change_t3']);
+    expect(output.decisions.map((d) => [d.tool, d.action, d.keepChange])).toEqual([
+      ['Read', 'drop_call', undefined],
+      ['Read', 'drop_call', undefined],
+      ['Bash', 'drop_result', 0.9],
+    ]);
   });
 
   it('keeps everything without calling Jev when no tool call is a candidate', async () => {

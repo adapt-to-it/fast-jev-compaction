@@ -14,6 +14,18 @@ import type {
   ToolUse,
 } from './types.js';
 
+/** Claude Code tools that only read, search or fetch, and never change anything. */
+export const DEFAULT_READ_ONLY_TOOLS: readonly string[] = [
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'NotebookRead',
+  'WebFetch',
+  'WebSearch',
+  'ToolSearch',
+];
+
 export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   goal: '',
   keepThreshold: 0.5,
@@ -21,6 +33,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
+  readOnlyTools: DEFAULT_READ_ONLY_TOOLS,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
@@ -49,12 +62,21 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
+    readOnlyTools: options.readOnlyTools ?? DEFAULT_OPTIONS.readOnlyTools,
   };
 }
 
-/** The two `noul` questions asked about one call: keep the call, keep its result. */
-export function questionsFor(call: ToolCall): JevQuestions {
-  return {
+/**
+ * The `noul` questions asked about one call: keep the call, keep its result,
+ * and, unless the tool is read-only, whether the current task depends on what
+ * the call changed. The change question is separate so each noul judges one
+ * condition; re-reading a file shows its current content, not what an edit did.
+ */
+export function questionsFor(
+  call: ToolCall,
+  readOnlyTools: readonly string[] = DEFAULT_READ_ONLY_TOOLS,
+): JevQuestions {
+  const questions: JevQuestions = {
     [`call_${call.id}`]: {
       type: 'noul',
       instructions: `Tool call ${call.id} (${call.tool}) should stay in the history: knowing this call was made, with its input, still matters for what the assistant does next`,
@@ -64,6 +86,17 @@ export function questionsFor(call: ToolCall): JevQuestions {
       instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do`,
     },
   };
+  if (!readOnlyTools.includes(call.tool)) {
+    questions[`change_${call.id}`] = {
+      type: 'noul',
+      instructions: `The current task depends on knowing exactly what tool call ${call.id} (${call.tool}) changed`,
+      criteria: {
+        true: 'The call edited, created, deleted, installed or committed something, and the latest user request or the work in progress needs its exact change: to describe or document it (in a changelog, commit message, pull request or reply), review it, build on it or undo it',
+        false: 'The call only read, searched or checked something, or what it changed has no bearing on the latest user request',
+      },
+    };
+  }
+  return questions;
 }
 
 /**
@@ -73,14 +106,15 @@ export function questionsFor(call: ToolCall): JevQuestions {
 export function batchCalls(
   calls: readonly ToolCall[],
   stateTokens: number,
-  options: Pick<ResolvedCompactOptions, 'maxRequestTokens'>,
+  options: Pick<ResolvedCompactOptions, 'maxRequestTokens'> &
+    Partial<Pick<ResolvedCompactOptions, 'readOnlyTools'>>,
 ): ToolCall[][] {
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
   const batches: ToolCall[][] = [];
   let current: ToolCall[] = [];
   let currentTokens = 0;
   for (const call of calls) {
-    const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
+    const tokens = estimateTokens(JSON.stringify(questionsFor(call, options.readOnlyTools)));
     if (current.length > 0 && currentTokens + tokens > budget) {
       batches.push(current);
       current = [];
@@ -108,7 +142,7 @@ export function decideCall(
   if (answer.keepResult >= options.keepThreshold) {
     return { ...base, action: 'keep', reason: 'kept' };
   }
-  if (answer.keepCall >= options.keepThreshold) {
+  if (Math.max(answer.keepCall, answer.keepChange ?? 0) >= options.keepThreshold) {
     return { ...base, action: 'drop_result', reason: 'result_dropped' };
   }
   return { ...base, action: 'drop_call', reason: 'call_dropped' };
@@ -118,17 +152,24 @@ async function askBatch(
   asker: JevAsker,
   state: CompactionState,
   batch: readonly ToolCall[],
+  readOnlyTools: readonly string[],
 ): Promise<Map<string, CallAnswer>> {
-  const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
+  const questions: JevQuestions = Object.assign(
+    {},
+    ...batch.map((call) => questionsFor(call, readOnlyTools)),
+  );
   const { answers } = await asker.ask(state, questions);
   return new Map(
-    batch.map((call) => [
-      call.id,
-      {
+    batch.map((call) => {
+      const answer: CallAnswer = {
         keepCall: noulAnswer(answers, `call_${call.id}`),
         keepResult: noulAnswer(answers, `result_${call.id}`),
-      },
-    ]),
+      };
+      if (`change_${call.id}` in questions) {
+        answer.keepChange = noulAnswer(answers, `change_${call.id}`);
+      }
+      return [call.id, answer];
+    }),
   );
 }
 
@@ -273,7 +314,7 @@ export async function compact(
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
     const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
+      batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools)),
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }

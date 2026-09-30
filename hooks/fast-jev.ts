@@ -196,7 +196,9 @@ export function decisionLog(result: CompactResult): string {
     .filter((d) => d.reason !== 'pinned')
     .map(
       (d) =>
-        `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}`,
+        `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}${
+          d.keepChange === undefined ? '' : `/change=${d.keepChange.toFixed(2)}`
+        }`,
     )
     .join(' ');
 }

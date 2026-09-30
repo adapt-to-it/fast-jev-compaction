@@ -52,6 +52,12 @@ export interface CallAnswer {
   keepCall: number;
   /** Jev's probability that the full result still needs to stay verbatim. */
   keepResult: number;
+  /**
+   * Jev's probability that the current task depends on exactly what the call
+   * changed. Asked only for tools outside `readOnlyTools`; keeps the call like
+   * `keepCall` does.
+   */
+  keepChange?: number;
 }
 
 export type CallAction = 'keep' | 'drop_result' | 'drop_call';
@@ -105,6 +111,11 @@ export interface CompactOptions {
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * Tools that never change files or state; their calls skip the `change`
+   * question. Default `DEFAULT_READ_ONLY_TOOLS` (Claude Code's read-only tools).
+   */
+  readOnlyTools?: readonly string[];
 }
 
 export interface ResolvedCompactOptions {
@@ -114,6 +125,7 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxRequestTokens: number;
   truncateHeadChars: number;
+  readOnlyTools: readonly string[];
 }
 
 export interface CompactResult {

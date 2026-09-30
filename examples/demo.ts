@@ -50,9 +50,9 @@ const messages: Message[] = [
 
 const result = await compactMessages(messages, { preserveRecentMessages: 2 });
 
-console.log('id | tool | action | keep call | keep result');
+console.log('id | tool | action | keep call | keep result | keep change');
 for (const d of result.decisions) {
-  console.log(`${d.id} | ${d.tool} | ${d.action} (${d.reason}) | ${d.keepCall.toFixed(2)} | ${d.keepResult.toFixed(2)}`);
+  console.log(`${d.id} | ${d.tool} | ${d.action} (${d.reason}) | ${d.keepCall.toFixed(2)} | ${d.keepResult.toFixed(2)} | ${d.keepChange?.toFixed(2) ?? '-'}`);
 }
 console.log('');
 console.log('stats:', JSON.stringify(result.stats));

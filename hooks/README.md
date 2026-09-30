@@ -9,7 +9,10 @@ root, so the hook imports it directly) and maps the result back onto session
 messages. User and assistant text is never touched. Jev is sent the whole
 conversation as `state` (tool outputs replaced by a one-line note) and, for
 every tool call outside the pinned first and newest messages, two questions:
-whether the call should stay and whether its full output should stay. An
+whether the call should stay and whether its full output should stay. Calls
+to tools that can change files or state (anything but `Read`, `Glob`, `Grep`
+and the other read-only tools) get a third: whether the current task depends
+on exactly what the call changed; a yes keeps the call. An
 item is kept when Jev's probability reaches `keepThreshold`; a dropped result
 is truncated to its first `truncateHeadChars` characters plus a one-line note,
 and a dropped call disappears with its result.

@@ -39,14 +39,20 @@ built-in compaction summary with the original messages.
 4. For every non-pinned call Jev gets two `noul` questions: should the **call**
    stay (knowing it was made, with its input, still matters), and should the
    **result** stay verbatim (its contents are still needed and re-running the
-   tool would not do).
+   tool would not do). A call to a tool outside `readOnlyTools` (an edit, a
+   write, a shell command) gets a third question: does the current task
+   depend on exactly what the call **changed**. Re-reading a file shows its
+   current content, not what an edit did, so the call input is the only record
+   of the change. The question is separate because Jev answers one condition
+   per `noul` more reliably than a compound one.
 5. Questions are split into as many requests as needed so state plus questions
    stays under `maxRequestTokens` (30k by default, under Jev's 32k request
    limit). The same full state is resent with every request; requests run
    concurrently and their answers are merged.
 6. Decisions per call, against `keepThreshold`:
    - `keepResult ≥ threshold` → keep call and result;
-   - else `keepCall ≥ threshold` → keep the call, truncate the result to its
+   - else `keepCall ≥ threshold` or `keepChange ≥ threshold` → keep the
+     call, truncate the result to its
      first `truncateHeadChars` characters plus a one-line note;
    - else → remove the call together with its result.
 7. The message list is rebuilt: a message that loses all its content is
@@ -110,6 +116,7 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `readOnlyTools` | `DEFAULT_READ_ONLY_TOOLS` | Tools that never change anything and skip the change question (Claude Code's `Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `ToolSearch`) |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
