@@ -23,7 +23,12 @@ const HOOK_DEFAULTS = {
   compactAtPercent: 60,
   minReductionRatio: 0.25,
   model: DEFAULT_MODEL,
+  resumeAfterCompact: true,
 };
+
+/** The prompt submitted after an automatic compaction, so the work goes on unattended. */
+export const RESUME_PROMPT =
+  'The context was just compacted. Continue the task from where you left off, without asking the user to confirm. If the task was already finished and you were waiting for the user, reply with one short line.';
 
 export type HookFetchInit = {
   method?: string;
@@ -45,6 +50,7 @@ export type HookConfig = CompactOptions & {
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
+  resumeAfterCompact: boolean;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -79,6 +85,10 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       HOOK_DEFAULTS.minReductionRatio,
     ),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
+    resumeAfterCompact:
+      typeof options['resumeAfterCompact'] === 'boolean'
+        ? options['resumeAfterCompact']
+        : HOOK_DEFAULTS.resumeAfterCompact,
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
@@ -245,17 +255,12 @@ async function getApiKey(
   return undefined;
 }
 
+/** Shows the outcome as a toast only: the transcript stays free of compaction notices. */
 function notify(
-  $: {
-    ui: {
-      log: (text: string) => void;
-      toast: (text: string, options?: { timeoutMs?: number }) => void;
-    };
-  },
+  $: { ui: { toast: (text: string, options?: { timeoutMs?: number }) => void } },
   text: string,
 ): void {
-  $.ui.log(text);
-  $.ui.toast(text, { timeoutMs: 15_000 });
+  $.ui.toast(`fast-jev-compaction: ${text}`, { timeoutMs: 15_000 });
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
@@ -269,7 +274,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
         const response = await $.http.fetch(url, init);
         return { status: response.status, ok: response.ok, text: response.text };
       });
-      for (const line of decisionLogLines(result)) $.ui.log(line);
       if (reductionRatio(result) < config.minReductionRatio) {
         notify(
           $,
@@ -292,16 +296,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting) return next(event);
+    // A subagent's turn or an interrupted one is no point to compact the main loop at.
+    if (compacting || event.agentId !== undefined || event.isAborted) return next(event);
     try {
       const { context } = await $.session.usage();
       if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
       compacting = true;
-      await $.session.compact();
+      const outcome = await $.session.compact();
+      // A plugin's prompt runs once the session is idle, so it is not awaited here.
+      if (configured.resumeAfterCompact && !('skip' in outcome && outcome.skip)) {
+        void $.prompt.submit({ text: RESUME_PROMPT });
+      }
     } catch (error) {
-      $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
-      );
+      notify($, `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`);
     } finally {
       compacting = false;
     }

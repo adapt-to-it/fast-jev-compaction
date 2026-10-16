@@ -59,23 +59,24 @@ The plugin declares these `userConfig` values in
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
 | `model` | `jev-latest` |
+| `resumeAfterCompact` | `true` |
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
 through `TYPESAFE_API_KEY`. The environment variable is the recommended
 development setup.
 
-Every option except `apiKey`, `compactAtPercent`, `minReductionRatio` and
-`model` is passed straight to the library; see the root README for what they
+Every option except `apiKey`, `compactAtPercent`, `minReductionRatio`,
+`model` and `resumeAfterCompact` is passed straight to the library; see the root README for what they
 do. The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below
-`minReductionRatio`, the hook logs a fallback and delegates to Claude Code's
-built-in compaction. The outcome is shown as a toast and logged with the
-reduction, per-reason counts, state size and request count; a per-call
-`decisions:` line with both probabilities is logged for diagnosis. The
-`turn.complete` hook requests
-compaction when `context.percent` reaches `compactAtPercent`, with an
-in-flight guard.
+`minReductionRatio`, the hook delegates to Claude Code's built-in compaction.
+The outcome, with the reduction, per-reason counts, state size and request
+count, is shown only as a toast; the hook writes nothing to the transcript.
+The `turn.complete` hook requests compaction when `context.percent` reaches
+`compactAtPercent`, with an in-flight guard. It ignores subagent turns and
+interrupted turns. When `resumeAfterCompact` is on, it then submits a short
+prompt so the model continues the task instead of waiting for the user.
 
 ## Scope and caveat
 
