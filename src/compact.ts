@@ -24,7 +24,63 @@ export const DEFAULT_READ_ONLY_TOOLS: readonly string[] = [
   'WebFetch',
   'WebSearch',
   'ToolSearch',
+  'AskUserQuestion',
+  'ListAgents',
+  'ReadNotifications',
+  'SendMessage',
+  'SendUserFile',
+  'Skill',
+  'TaskGet',
+  'TaskList',
+  'TaskOutput',
+  'BashOutput',
+  'CronList',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
 ];
+
+/** First words of shell commands that only read, list or inspect. */
+const READ_ONLY_COMMANDS = new Set([
+  'cat', 'head', 'tail', 'less', 'ls', 'pwd', 'echo', 'printf', 'wc', 'grep', 'rg', 'ugrep',
+  'find', 'fd', 'which', 'file', 'stat', 'du', 'df', 'diff', 'jq', 'tree', 'date',
+  'whoami', 'uname', 'sort', 'uniq', 'cut', 'tr', 'awk', 'sed', 'column', 'basename', 'dirname',
+  'realpath', 'readlink', 'type', 'true', 'cd', 'test', '[',
+]);
+
+/** `git` subcommands that change nothing. */
+const READ_ONLY_GIT = new Set([
+  'status', 'log', 'diff', 'show', 'branch', 'remote', 'rev-parse', 'ls-files', 'blame', 'grep',
+  'describe', 'shortlog', 'ls-remote', 'config',
+]);
+
+function isReadOnlySegment(segment: string): boolean {
+  const words = segment.trim().split(/\s+/);
+  const [head = '', sub = ''] = words;
+  if (head === '') return true;
+  if (head === 'git') return READ_ONLY_GIT.has(sub) && !(sub === 'branch' && words.length > 2);
+  if (head === 'sed') return !words.some((w) => w.startsWith('-i'));
+  if (head === 'find') return !words.some((w) => w === '-delete' || w.startsWith('-exec') || w.startsWith('-ok'));
+  if (head === 'awk') return !segment.includes('system(');
+  return READ_ONLY_COMMANDS.has(head);
+}
+
+/**
+ * Whether a call can be told apart as read-only: a tool in `readOnlyTools`, or
+ * a Bash command whose every segment starts with a read-only command and that
+ * writes no file. Anything unsure counts as changing.
+ */
+export function isReadOnlyCall(
+  call: Pick<ToolCall, 'tool' | 'input'>,
+  readOnlyTools: readonly string[] = DEFAULT_READ_ONLY_TOOLS,
+): boolean {
+  if (readOnlyTools.includes(call.tool)) return true;
+  if (call.tool !== 'Bash') return false;
+  const command = call.input['command'];
+  if (typeof command !== 'string' || /[<>]|\$\(|`|<<|\btee\b/.test(command.replace(/2>&1|\d?>\s*\/dev\/null/g, ''))) {
+    return false;
+  }
+  return command.split(/&&|\|\||;|\||\n/).every(isReadOnlySegment);
+}
 
 export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   goal: '',
@@ -86,7 +142,7 @@ export function questionsFor(
       instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do`,
     },
   };
-  if (!readOnlyTools.includes(call.tool)) {
+  if (!isReadOnlyCall(call, readOnlyTools)) {
     questions[`change_${call.id}`] = {
       type: 'noul',
       instructions: `The current task depends on knowing exactly what tool call ${call.id} (${call.tool}) changed`,

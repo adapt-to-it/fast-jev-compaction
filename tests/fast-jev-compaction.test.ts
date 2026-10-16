@@ -12,6 +12,7 @@ import {
   JevClient,
   parseJevResponse,
   questionsFor,
+  isReadOnlyCall,
   reductionRatio,
   resolveOptions,
   type HistoryToolCall,
@@ -276,6 +277,36 @@ describe('questions', () => {
       'call_t1',
       'result_t1',
     ]);
+  });
+
+  it('tells read-only Bash commands from changing ones', () => {
+    const bash = (command: string) => isReadOnlyCall({ tool: 'Bash', input: { command } });
+    for (const command of [
+      'ls -la src; cat a.ts | head -20',
+      'cd app && git status --short && git diff --stat',
+      "sed -n 10,20p a.ts 2>/dev/null",
+      'grep -rn foo src | wc -l',
+      'find . -name "*.ts"',
+    ]) {
+      expect(bash(command), command).toBe(true);
+    }
+    for (const command of [
+      'npm test',
+      "sed -i '' s/a/b/ a.ts",
+      'echo x > a.txt',
+      'cat > a.ts <<EOF\nx\nEOF',
+      'git commit -m x',
+      'git branch -D old',
+      'find . -name "*.tmp" -delete',
+      'find . -exec rm {} \\;',
+      'ls; rm -rf build',
+      "awk 'BEGIN{system(\"rm a\")}'",
+      'echo $(rm a)',
+    ]) {
+      expect(bash(command), command).toBe(false);
+    }
+    expect(isReadOnlyCall({ tool: 'AskUserQuestion', input: {} })).toBe(true);
+    expect(isReadOnlyCall({ tool: 'Agent', input: {} })).toBe(false);
   });
 });
 

@@ -116,7 +116,7 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
-| `readOnlyTools` | `DEFAULT_READ_ONLY_TOOLS` | Tools that never change anything and skip the change question (Claude Code's `Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `WebFetch`, `WebSearch`, `ToolSearch`) |
+| `readOnlyTools` | `DEFAULT_READ_ONLY_TOOLS` | Tools that never change anything and skip the change question (Claude Code's read, search and fetch tools, plus `AskUserQuestion`, `Skill`, `SendMessage` and the other tools that change no file). A `Bash` call also skips it when every command in it only reads (`ls`, `cat`, `grep`, `git status`, `sed -n`, ...) and nothing is redirected to a file |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
@@ -138,11 +138,11 @@ The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
 is a thin adapter that feeds `session.compact` transcripts through `src/` and
 falls back to Claude Code's built-in summary on errors or insufficient
 reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
-Claude Code 2.1.274 type reference.
+Claude Code 2.1.301 type reference.
 
 ### Install in Claude Code
 
-Function hooks are an early-access Claude Code feature (2.1.274+), so the
+Function hooks are an early-access Claude Code feature (2.1.301+), so the
 opt-in flag must be set wherever Claude Code runs, e.g. in `~/.claude/settings.json`:
 
 ```json
@@ -163,7 +163,10 @@ Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
 auto-compaction) goes through Jev: the toast reads
 `fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
 replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails).
+could not remove enough (short sessions, or when it fails). Every compaction
+also writes a JSON record of its decisions to
+`~/.claude/fast-jev-compaction/logs/<session>/` unless the `decisionLog` option
+is off; see `hooks/README.md`.
 
 To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
 from the repository root. No publishing step is required; the marketplace is

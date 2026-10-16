@@ -9,6 +9,7 @@ import type {
 } from 'claude-code';
 
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
+import { compactionLog, logPath, type CompactionLog } from './log.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
   CompactOptions,
@@ -24,6 +25,7 @@ const HOOK_DEFAULTS = {
   minReductionRatio: 0.25,
   model: DEFAULT_MODEL,
   resumeAfterCompact: true,
+  decisionLog: true,
 };
 
 /** The prompt submitted after an automatic compaction, so the work goes on unattended. */
@@ -51,6 +53,10 @@ export type HookConfig = CompactOptions & {
   minReductionRatio: number;
   model: string;
   resumeAfterCompact: boolean;
+  /** Writes one JSON record per compaction under `logDir`. */
+  decisionLog: boolean;
+  /** Absent: `~/.claude/fast-jev-compaction/logs`. */
+  logDir?: string;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -89,7 +95,13 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       typeof options['resumeAfterCompact'] === 'boolean'
         ? options['resumeAfterCompact']
         : HOOK_DEFAULTS.resumeAfterCompact,
+    decisionLog:
+      typeof options['decisionLog'] === 'boolean'
+        ? options['decisionLog']
+        : HOOK_DEFAULTS.decisionLog,
   };
+  const logDir = optionString(options, 'logDir');
+  if (logDir) config.logDir = logDir;
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
   const goal = optionString(options, 'goal');
@@ -199,43 +211,6 @@ export function summarize(result: CompactResult): string {
   }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)`;
 }
 
-const UI_LOG_MAX_CHARS = 4096;
-
-export function decisionLog(result: CompactResult): string {
-  return result.decisions
-    .filter((d) => d.reason !== 'pinned')
-    .map(
-      (d) =>
-        `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}${
-          d.keepChange === undefined ? '' : `/change=${d.keepChange.toFixed(2)}`
-        }`,
-    )
-    .join(' ');
-}
-
-export function decisionLogLines(
-  result: CompactResult,
-  maxChars: number = UI_LOG_MAX_CHARS,
-): string[] {
-  const entries = decisionLog(result).split(' ').filter(Boolean);
-  if (entries.length === 0) return ['decisions: (none)'];
-  const chunks: string[] = [];
-  let current = '';
-  for (const entry of entries) {
-    const next = current ? `${current} ${entry}` : entry;
-    if (current && next.length > maxChars - 24) {
-      chunks.push(current);
-      current = entry;
-    } else current = next;
-  }
-  chunks.push(current);
-  return chunks.map((chunk, index) =>
-    chunks.length === 1
-      ? `decisions: ${chunk}`
-      : `decisions (${index + 1}/${chunks.length}): ${chunk}`,
-  );
-}
-
 async function getApiKey(
   $: {
     env: { get: (name: string) => Promise<string | undefined> };
@@ -263,11 +238,70 @@ function notify(
   $.ui.toast(`fast-jev-compaction: ${text}`, { timeoutMs: 15_000 });
 }
 
+export type Precomputed = { input: readonly SessionMessage[]; output: SessionMessage[] };
+
+/**
+ * The precomputed compaction applied to `messages`: its output plus every
+ * message that came after its input, or undefined when `messages` no longer
+ * opens with that input, matched by engine handle.
+ */
+export function reusePrecomputed(
+  precomputed: Precomputed | undefined,
+  messages: readonly SessionMessage[],
+): SessionMessage[] | undefined {
+  if (!precomputed) return undefined;
+  const { input, output } = precomputed;
+  const opens =
+    input.length > 0 &&
+    input.length <= messages.length &&
+    input.every((m, i) => m.handle !== undefined && m.handle === messages[i]!.handle);
+  return opens ? [...output, ...messages.slice(input.length)] : undefined;
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  /** The main conversation's last precomputed compaction: its input and its output. */
+  let precomputed: Precomputed | undefined;
 
   on('session.compact', async ($, event, next) => {
+    const isMain = event.agentId === undefined;
+    const isPrecompute = event.trigger === 'precompute';
+    const record = async (
+      log: Pick<Parameters<typeof compactionLog>[0], 'outcome' | 'note'>,
+      result?: CompactResult,
+      after?: number,
+    ) => {
+      if (!configured.decisionLog) return;
+      try {
+        const entry: CompactionLog = compactionLog(
+          {
+            ...log,
+            sessionId: await $.session.id(),
+            trigger: event.trigger,
+            messages: event.messages,
+            preserveRecentMessages: resolveOptions(configured).preserveRecentMessages,
+          },
+          result,
+          after,
+        );
+        const dir = configured.logDir ?? `${await $.env.get('HOME')}/.claude/fast-jev-compaction/logs`;
+        await $.fs.write(logPath(dir, entry), `${JSON.stringify(entry, null, 2)}\n`);
+      } catch {
+        // The log is a diagnostic: a failed write never changes the compaction.
+      }
+    };
+
+    // The engine compacts what was precomputed, plus what came after: answer at once.
+    const reused = isMain && !isPrecompute ? reusePrecomputed(precomputed, event.messages) : undefined;
+    if (reused) {
+      precomputed = undefined;
+      notify($, `kept ${reused.length}/${event.messages.length} messages from the precomputed compaction`);
+      await record({ outcome: 'reused' }, undefined, reused.length);
+      return { messages: reused };
+    }
+    // A new precompute replaces the last one, whatever it comes to.
+    if (isMain && isPrecompute) precomputed = undefined;
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
@@ -275,22 +309,26 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { status: response.status, ok: response.ok, text: response.text };
       });
       if (reductionRatio(result) < config.minReductionRatio) {
-        notify(
-          $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
-        );
+        const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
+        if (!isPrecompute) notify($, `fallback to built-in summary (${note})`);
+        await record({ outcome: 'fallback', note }, result);
         return next(event);
+      }
+      if (isPrecompute) {
+        if (isMain) precomputed = { input: event.messages, output: messages };
+        await record({ outcome: 'precomputed', note: summarize(result) }, result, messages.length);
+        return { messages };
       }
       notify(
         $,
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
       );
+      await record({ outcome: 'applied', note: summarize(result) }, result, messages.length);
       return { messages };
     } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
+      const note = error instanceof Error ? error.message : String(error);
+      if (!isPrecompute) notify($, `fallback to built-in summary (${note})`);
+      await record({ outcome: 'error', note });
       return next(event);
     }
   });

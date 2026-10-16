@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { compactionLog, logPath } from '../hooks/log.js';
 import {
   compactSession,
-  decisionLog,
-  decisionLogLines,
+  reusePrecomputed,
   resolveHookConfig,
   summarize,
   toSessionMessages,
@@ -58,9 +58,10 @@ describe('hook config', () => {
       minReductionRatio: 0.25,
       model: 'jev-latest',
       resumeAfterCompact: true,
+      decisionLog: true,
     });
     expect(
-      resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no', resumeAfterCompact: false }),
+      resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no', resumeAfterCompact: false, decisionLog: false, logDir: '/tmp/l' }),
     ).toEqual({
       apiKey: 'k',
       keepThreshold: 0.3,
@@ -70,6 +71,8 @@ describe('hook config', () => {
       compactAtPercent: 60,
       minReductionRatio: 0.25,
       resumeAfterCompact: false,
+      decisionLog: false,
+      logDir: '/tmp/l',
     });
   });
 });
@@ -129,20 +132,6 @@ describe('compactSession', () => {
     expect(output.decisions.map((d) => d.action)).toEqual(['drop_call', 'keep']);
     expect(messages.map((m) => m.handle)).toEqual(['h-0', 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
     expect(summarize(output)).toMatch(/^\d+% reduction; 1 kept, 1 call_dropped; state ~\d+ tokens \(full\) in 1 request\(s\)$/);
-    expect(decisionLog(output)).toBe('t1:Read:drop_call/call=0.10/result=0.10 t2:Bash:keep/call=0.90/result=0.90/change=0.10');
-    expect(decisionLogLines(output)).toEqual([`decisions: ${decisionLog(output)}`]);
-  });
-
-  it('splits a long decision log into ui.log lines under the host limit', async () => {
-    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
-    const { result: output } = await compactSession(transcript(), config, jevFetch(() => 0.1));
-    const lines = decisionLogLines(output, 70);
-    expect(lines).toEqual([
-      'decisions (1/2): t1:Read:drop_call/call=0.10/result=0.10',
-      'decisions (2/2): t2:Bash:drop_call/call=0.10/result=0.10/change=0.10',
-    ]);
-    expect(lines.every((line) => line.length <= 70)).toBe(true);
-    expect(decisionLogLines({ ...output, decisions: [] })).toEqual(['decisions: (none)']);
   });
 
   it('throws on a missing key and on failed requests so the hook falls back', async () => {
@@ -151,5 +140,48 @@ describe('compactSession', () => {
     await expect(
       compactSession(transcript(), { ...config, apiKey: 'k' }, async () => ({ status: 500, ok: false, text: 'x' })),
     ).rejects.toThrow(/500/);
+  });
+});
+
+describe('compaction log', () => {
+  it('ties every decision to its call input and the latest request', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const messages = transcript();
+    const { result } = await compactSession(messages, config, jevFetch(() => 0.1));
+    const log = compactionLog(
+      { sessionId: 's1', trigger: 'precompute', outcome: 'precomputed', messages, preserveRecentMessages: 1 },
+      result,
+      3,
+    );
+    expect(log.latestRequest).toBe('go ahead');
+    expect(log.messagesAfter).toBe(3);
+    expect(log.decisions.map((d) => [d.id, d.tool, d.input])).toEqual([
+      ['t1', 'Read', '{"file_path":"src/a.ts"}'],
+      ['t2', 'Bash', '{"command":"npm test"}'],
+    ]);
+    expect(log.decisions[1]!.keepChange).toBeCloseTo(0.1);
+    expect(logPath('/logs/', { ...log, at: '2026-10-16T10:00:00.000Z' })).toBe(
+      '/logs/s1/2026-10-16T10-00-00-000Z-precompute.json',
+    );
+  });
+});
+
+describe('precomputed compaction', () => {
+  it('answers with the precomputed output plus the messages that came after', () => {
+    const input = transcript();
+    const output = [input[0]!, input[5]!, input[6]!];
+    const later = message('assistant', 'Done.', { handle: 'h-7' });
+    expect(reusePrecomputed({ input, output }, [...input, later])).toEqual([...output, later]);
+    expect(reusePrecomputed({ input, output }, input)).toEqual(output);
+  });
+
+  it('gives up when the transcript no longer opens with the precomputed input', () => {
+    const input = transcript();
+    const output = [input[0]!];
+    expect(reusePrecomputed(undefined, input)).toBeUndefined();
+    expect(reusePrecomputed({ input, output }, input.slice(1))).toBeUndefined();
+    expect(reusePrecomputed({ input, output }, [message('user', 'x', { handle: 'other' }), ...input.slice(1)])).toBeUndefined();
+    const unhandled = input.map(({ handle: _h, ...m }) => m);
+    expect(reusePrecomputed({ input: unhandled, output }, unhandled)).toBeUndefined();
   });
 });
