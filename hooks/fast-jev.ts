@@ -21,7 +21,7 @@ import type {
 } from '../src/types.js';
 
 const HOOK_DEFAULTS = {
-  compactAtPercent: 60,
+  compactAtPercent: 0,
   minReductionRatio: 0.25,
   model: DEFAULT_MODEL,
   resumeAfterCompact: true,
@@ -211,6 +211,12 @@ export function summarize(result: CompactResult): string {
   }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)`;
 }
 
+/** The toast line: what changed for the person, in one short sentence. */
+export function headline(result: CompactResult): string {
+  const { stats } = result;
+  return `${stats.messagesBefore} → ${stats.messagesAfter} messages, context −${percent(reductionRatio(result))} (${stats.callsDropped} tool calls removed)`;
+}
+
 async function getApiKey(
   $: {
     env: { get: (name: string) => Promise<string | undefined> };
@@ -230,12 +236,15 @@ async function getApiKey(
   return undefined;
 }
 
-/** Shows the outcome as a toast only: the transcript stays free of compaction notices. */
+/**
+ * Shows the outcome as a toast only: the transcript stays free of compaction
+ * notices. The host draws it under the plugin's name, so the text leaves it out.
+ */
 function notify(
   $: { ui: { toast: (text: string, options?: { timeoutMs?: number }) => void } },
   text: string,
 ): void {
-  $.ui.toast(`fast-jev-compaction: ${text}`, { timeoutMs: 15_000 });
+  $.ui.toast(text, { timeoutMs: 10_000 });
 }
 
 export type Precomputed = { input: readonly SessionMessage[]; output: SessionMessage[] };
@@ -296,12 +305,13 @@ export const register: Register = (on: On, options: PluginOptions) => {
     const reused = isMain && !isPrecompute ? reusePrecomputed(precomputed, event.messages) : undefined;
     if (reused) {
       precomputed = undefined;
-      notify($, `kept ${reused.length}/${event.messages.length} messages from the precomputed compaction`);
+      notify($, `${event.messages.length} → ${reused.length} messages, from the precomputed compaction`);
       await record({ outcome: 'reused' }, undefined, reused.length);
       return { messages: reused };
     }
     // A new precompute replaces the last one, whatever it comes to.
     if (isMain && isPrecompute) precomputed = undefined;
+    if (!isPrecompute) $.ui.status('Jev is compacting the context…');
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
@@ -310,7 +320,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
       });
       if (reductionRatio(result) < config.minReductionRatio) {
         const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
-        if (!isPrecompute) notify($, `fallback to built-in summary (${note})`);
+        if (!isPrecompute) {
+          notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
+        }
         await record({ outcome: 'fallback', note }, result);
         return next(event);
       }
@@ -319,22 +331,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
         await record({ outcome: 'precomputed', note: summarize(result) }, result, messages.length);
         return { messages };
       }
-      notify(
-        $,
-        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
-      );
+      notify($, headline(result));
       await record({ outcome: 'applied', note: summarize(result) }, result, messages.length);
       return { messages };
     } catch (error) {
       const note = error instanceof Error ? error.message : String(error);
-      if (!isPrecompute) notify($, `fallback to built-in summary (${note})`);
+      if (!isPrecompute) notify($, `built-in summary used: ${note}`);
       await record({ outcome: 'error', note });
       return next(event);
+    } finally {
+      if (!isPrecompute) $.ui.status(undefined);
     }
+  }).catch(($, event, next) => {
+    // A hook that threw or overran its budget: the built-in summary takes over.
+    $.ui.status(undefined);
+    return next(event);
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
     // A subagent's turn or an interrupted one is no point to compact the main loop at.
+    // 0 leaves compaction to the engine's own threshold (`autoCompactWindow`),
+    // which compacts mid-turn and goes on without a prompt.
+    if (configured.compactAtPercent <= 0) return next(event);
     if (compacting || event.agentId !== undefined || event.isAborted) return next(event);
     try {
       const { context } = await $.session.usage();

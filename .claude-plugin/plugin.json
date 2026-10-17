@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "author": {
     "name": "tamaratran",
@@ -29,8 +29,8 @@
     "compactAtPercent": {
       "type": "number",
       "title": "Compaction percentage",
-      "description": "Context percentage at which turn.complete requests compaction.",
-      "default": 60
+      "description": "Context percentage at which the plugin compacts at the end of a turn and then submits a resume prompt. 0 (the default) leaves the timing to Claude Code's own threshold (autoCompactWindow), which compacts mid-turn and continues without a prompt.",
+      "default": 0
     },
     "minReductionRatio": {
       "type": "number",

@@ -53,7 +53,7 @@ The plugin declares these `userConfig` values in
 | --- | ---: |
 | `keepThreshold` | `0.5` |
 | `preserveRecentMessages` | `6` |
-| `compactAtPercent` | `60` |
+| `compactAtPercent` | `0` (off) |
 | `minReductionRatio` | `0.25` |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
@@ -73,12 +73,21 @@ do. The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below
 `minReductionRatio`, the hook delegates to Claude Code's built-in compaction.
-The outcome, with the reduction, per-reason counts, state size and request
-count, is shown only as a toast; the hook writes nothing to the transcript.
-The `turn.complete` hook requests compaction when `context.percent` reaches
-`compactAtPercent`, with an in-flight guard. It ignores subagent turns and
-interrupted turns. When `resumeAfterCompact` is on, it then submits a short
-prompt so the model continues the task instead of waiting for the user.
+While Jev works, the plugin's status line reads `Jev is compacting the
+context…`. The outcome is one short toast (messages before and after, the
+context cut, the tool calls removed); the full figures go to the decision log.
+The hook writes nothing to the transcript. The terminal and the Claude
+desktop app both draw the toast under the plugin's name.
+
+By default the plugin leaves the timing to Claude Code: the engine compacts
+at its own threshold, set with `autoCompactWindow` in `settings.json`, in the
+middle of a turn, and the turn goes on by itself. To compact earlier from the
+plugin instead, set `compactAtPercent`: the `turn.complete` hook then requests
+compaction when `context.percent` reaches it, with an in-flight guard,
+ignoring subagent and interrupted turns. A compaction between turns leaves
+the model idle, so when `resumeAfterCompact` is on the hook submits a short
+prompt to continue the task. That prompt shows in the conversation as a
+message from the plugin.
 
 The hook also answers the engine's `precompute` trigger, a compaction
 computed ahead of time that installs nothing. It keeps the result for the

@@ -32,11 +32,21 @@ export type CompactionLog = {
   }>;
 };
 
-/** The newest user message with text: what the task was when compaction ran. */
-function latestRequest(messages: readonly SessionMessage[]): string {
+/**
+ * The newest user message with text of its own: what the task was when
+ * compaction ran. Engine wrappers (`<command-name>`, `<local-command-stdout>`,
+ * `<system-reminder>`, ...) and the interruption notice are stripped, so a
+ * slash command or an Esc is not the request.
+ */
+export function latestRequest(messages: readonly SessionMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;
-    if (message.role === 'user' && message.text.trim()) return message.text.slice(0, REQUEST_CHARS);
+    if (message.role !== 'user') continue;
+    const text = message.text
+      .replace(/<([a-z][\w-]*)>[\s\S]*?<\/\1>/g, '')
+      .replace(/\[Request interrupted by user[^\]]*\]/g, '')
+      .trim();
+    if (text) return text.slice(0, REQUEST_CHARS);
   }
   return '';
 }

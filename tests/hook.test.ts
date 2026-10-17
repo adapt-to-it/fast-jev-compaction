@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { compactionLog, logPath } from '../hooks/log.js';
+import { compactionLog, latestRequest, logPath } from '../hooks/log.js';
 import {
   compactSession,
   reusePrecomputed,
+  headline,
   resolveHookConfig,
   summarize,
   toSessionMessages,
@@ -54,7 +55,7 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
     expect(resolveHookConfig({})).toEqual({
-      compactAtPercent: 60,
+      compactAtPercent: 0,
       minReductionRatio: 0.25,
       model: 'jev-latest',
       resumeAfterCompact: true,
@@ -68,7 +69,7 @@ describe('hook config', () => {
       maxStateTokens: 1000,
       model: 'jev-x',
       goal: 'g',
-      compactAtPercent: 60,
+      compactAtPercent: 0,
       minReductionRatio: 0.25,
       resumeAfterCompact: false,
       decisionLog: false,
@@ -183,5 +184,29 @@ describe('precomputed compaction', () => {
     expect(reusePrecomputed({ input, output }, [message('user', 'x', { handle: 'other' }), ...input.slice(1)])).toBeUndefined();
     const unhandled = input.map(({ handle: _h, ...m }) => m);
     expect(reusePrecomputed({ input: unhandled, output }, unhandled)).toBeUndefined();
+  });
+});
+
+describe('latest request', () => {
+  it('skips slash-command wrappers and engine notices', () => {
+    const messages = [
+      message('user', 'Fix the parser test.'),
+      message('assistant', 'Done.'),
+      message('user', '<command-name>/reload-plugins</command-name>\n<command-message>reload-plugins</command-message>\n<command-args></command-args>'),
+      message('user', '<local-command-stdout>Configuration cancelled.</local-command-stdout>'),
+      message('user', '[Request interrupted by user]'),
+      message('user', '[Request interrupted by user for tool use]'),
+    ];
+    expect(latestRequest(messages)).toBe('Fix the parser test.');
+    expect(latestRequest([message('user', '<system-reminder>x</system-reminder>\nnow add docs')])).toBe('now add docs');
+    expect(latestRequest([message('user', '<command-name>/x</command-name>')])).toBe('');
+  });
+});
+
+describe('toast', () => {
+  it('reads as one short sentence', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const { result } = await compactSession(transcript(), config, jevFetch(() => 0.1));
+    expect(headline(result)).toMatch(/^7 → \d+ messages, context −\d+% \(2 tool calls removed\)$/);
   });
 });
