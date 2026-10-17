@@ -170,6 +170,28 @@ function historyEntries(
   return entries;
 }
 
+/**
+ * The newest user message with text of its own: what the task was when
+ * compaction ran. Engine wrappers (`<command-name>`, `<local-command-stdout>`,
+ * `<system-reminder>`, ...) and the interruption notice are stripped, so a
+ * slash command or an Esc is not the request.
+ */
+export function latestRequest(
+  messages: readonly Pick<Message, 'role' | 'text'>[],
+  limit = 1000,
+): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== 'user') continue;
+    const text = message.text
+      .replace(/<([a-z][\w-]*)>[\s\S]*?<\/\1>/g, '')
+      .replace(/\[Request interrupted by user[^\]]*\]/g, '')
+      .trim();
+    if (text) return text.slice(0, limit);
+  }
+  return '';
+}
+
 /** The last three user prompts, as the default `goal`. */
 export function goalFromMessages(messages: readonly Message[]): string {
   return messages

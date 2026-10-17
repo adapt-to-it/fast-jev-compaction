@@ -1,6 +1,6 @@
 import type { SessionCompactTrigger, SessionMessage } from 'claude-code';
 
-import { collectToolCalls } from '../src/state.js';
+import { collectToolCalls, latestRequest as requestOf } from '../src/state.js';
 import type { CompactResult } from '../src/types.js';
 
 /** Characters of a call input kept in the log. */
@@ -32,23 +32,9 @@ export type CompactionLog = {
   }>;
 };
 
-/**
- * The newest user message with text of its own: what the task was when
- * compaction ran. Engine wrappers (`<command-name>`, `<local-command-stdout>`,
- * `<system-reminder>`, ...) and the interruption notice are stripped, so a
- * slash command or an Esc is not the request.
- */
+/** The latest user request, at most `REQUEST_CHARS` long. */
 export function latestRequest(messages: readonly SessionMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!;
-    if (message.role !== 'user') continue;
-    const text = message.text
-      .replace(/<([a-z][\w-]*)>[\s\S]*?<\/\1>/g, '')
-      .replace(/\[Request interrupted by user[^\]]*\]/g, '')
-      .trim();
-    if (text) return text.slice(0, REQUEST_CHARS);
-  }
-  return '';
+  return requestOf(messages, REQUEST_CHARS);
 }
 
 /** One compaction as a self-contained record, every decision tied to its call input. */

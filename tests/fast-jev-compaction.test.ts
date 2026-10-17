@@ -279,6 +279,12 @@ describe('questions', () => {
     ]);
   });
 
+  it('quotes the latest user request in the change question', () => {
+    const quoted = questionsFor({ ...base, tool: 'Edit' }, undefined, 'commit and push');
+    expect(quoted.change_t1!.instructions).toContain('"commit and push"');
+    expect(questionsFor({ ...base, tool: 'Edit' }).change_t1!.instructions).toMatch(/^The current task/);
+  });
+
   it('tells read-only Bash commands from changing ones', () => {
     const bash = (command: string) => isReadOnlyCall({ tool: 'Bash', input: { command } });
     for (const command of [

@@ -1,5 +1,5 @@
 import { noulAnswer } from './request.js';
-import { collectToolCalls, estimateTokens, fitState } from './state.js';
+import { collectToolCalls, estimateTokens, fitState, latestRequest } from './state.js';
 import type {
   CallAnswer,
   CallDecision,
@@ -92,6 +92,9 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   readOnlyTools: DEFAULT_READ_ONLY_TOOLS,
 };
 
+/** Characters of the latest user request quoted in each change question. */
+const REQUEST_QUOTE_CHARS = 300;
+
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 20;
 
@@ -127,10 +130,13 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
  * and, unless the tool is read-only, whether the current task depends on what
  * the call changed. The change question is separate so each noul judges one
  * condition; re-reading a file shows its current content, not what an edit did.
+ * It quotes the latest user request (`request`, already shortened), so Jev
+ * weighs the change against what was asked rather than against the history.
  */
 export function questionsFor(
   call: ToolCall,
   readOnlyTools: readonly string[] = DEFAULT_READ_ONLY_TOOLS,
+  request = '',
 ): JevQuestions {
   const questions: JevQuestions = {
     [`call_${call.id}`]: {
@@ -145,7 +151,9 @@ export function questionsFor(
   if (!isReadOnlyCall(call, readOnlyTools)) {
     questions[`change_${call.id}`] = {
       type: 'noul',
-      instructions: `The current task depends on knowing exactly what tool call ${call.id} (${call.tool}) changed`,
+      instructions: request
+        ? `The latest user request (${JSON.stringify(request)}) or the work in progress toward it depends on knowing exactly what tool call ${call.id} (${call.tool}) changed`
+        : `The current task depends on knowing exactly what tool call ${call.id} (${call.tool}) changed`,
       criteria: {
         true: 'The call edited, created, deleted, installed or committed something, and the latest user request or the work in progress needs its exact change: to describe or document it (in a changelog, commit message, pull request or reply), review it, build on it or undo it',
         false: 'The call only read, searched or checked something, or what it changed has no bearing on the latest user request',
@@ -163,14 +171,14 @@ export function batchCalls(
   calls: readonly ToolCall[],
   stateTokens: number,
   options: Pick<ResolvedCompactOptions, 'maxRequestTokens'> &
-    Partial<Pick<ResolvedCompactOptions, 'readOnlyTools'>>,
+    Partial<Pick<ResolvedCompactOptions, 'readOnlyTools'>> & { request?: string },
 ): ToolCall[][] {
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
   const batches: ToolCall[][] = [];
   let current: ToolCall[] = [];
   let currentTokens = 0;
   for (const call of calls) {
-    const tokens = estimateTokens(JSON.stringify(questionsFor(call, options.readOnlyTools)));
+    const tokens = estimateTokens(JSON.stringify(questionsFor(call, options.readOnlyTools, options.request)));
     if (current.length > 0 && currentTokens + tokens > budget) {
       batches.push(current);
       current = [];
@@ -209,10 +217,11 @@ async function askBatch(
   state: CompactionState,
   batch: readonly ToolCall[],
   readOnlyTools: readonly string[],
+  request: string,
 ): Promise<Map<string, CallAnswer>> {
   const questions: JevQuestions = Object.assign(
     {},
-    ...batch.map((call) => questionsFor(call, readOnlyTools)),
+    ...batch.map((call) => questionsFor(call, readOnlyTools, request)),
   );
   const { answers } = await asker.ask(state, questions);
   return new Map(
@@ -368,9 +377,10 @@ export async function compact(
   if (candidates.length > 0) {
     const state = fitState(messages, calls, resolved);
     fitted = state;
-    batches = batchCalls(candidates, state.tokens, resolved);
+    const request = latestRequest(messages, REQUEST_QUOTE_CHARS);
+    batches = batchCalls(candidates, state.tokens, { ...resolved, request });
     const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools)),
+      batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools, request)),
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
