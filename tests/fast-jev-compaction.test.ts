@@ -12,6 +12,7 @@ import {
   JevClient,
   parseJevResponse,
   questionsFor,
+  isLocalCommandEcho,
   isReadOnlyCall,
   reductionRatio,
   resolveOptions,
@@ -279,6 +280,20 @@ describe('questions', () => {
     ]);
   });
 
+  it('tells local command echoes from requests', () => {
+    const user = (text: string) => ({ role: 'user' as const, text, toolUses: [] });
+    expect(isLocalCommandEcho(user('<local-command-caveat>x</local-command-caveat>'))).toBe(true);
+    expect(
+      isLocalCommandEcho(
+        user('<command-name>/reload-plugins</command-name>\n<command-message>reload-plugins</command-message>\n<command-args></command-args>'),
+      ),
+    ).toBe(true);
+    expect(isLocalCommandEcho(user('<local-command-stdout>Reloaded: 12 plugins</local-command-stdout>'))).toBe(true);
+    expect(isLocalCommandEcho(user('<command-name>/squadra</command-name><command-args>split it</command-args>'))).toBe(false);
+    expect(isLocalCommandEcho(user('<local-command-stdout>ok</local-command-stdout> now fix the test'))).toBe(false);
+    expect(isLocalCommandEcho(user('plain request'))).toBe(false);
+  });
+
   it('quotes the latest user request in the change question', () => {
     const quoted = questionsFor({ ...base, tool: 'Edit' }, undefined, 'commit and push');
     expect(quoted.change_t1!.instructions).toContain('"commit and push"');
@@ -459,6 +474,19 @@ describe('compact', () => {
     expect(seen).toHaveLength(0);
     expect(output.stats).toMatchObject({ requests: 0, stateStage: '', calls: 0 });
     expect(output.messages).toEqual(messages);
+  });
+
+  it('drops old local command echoes and keeps recent ones', async () => {
+    const reload = '<command-name>/reload-plugins</command-name>';
+    const messages = [
+      message('user', 'fix the parser'),
+      message('user', reload),
+      message('assistant', 'done'),
+      message('user', 'thanks'),
+      message('user', reload),
+    ];
+    const output = await compact(messages, fakeJev(() => 0), { preserveRecentMessages: 1 });
+    expect(output.messages.map((m) => m.text)).toEqual(['fix the parser', 'done', 'thanks', reload]);
   });
 
   it('reports a tiny reduction when Jev wants everything kept', async () => {

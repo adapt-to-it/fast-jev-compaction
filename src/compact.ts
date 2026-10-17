@@ -1,5 +1,5 @@
 import { noulAnswer } from './request.js';
-import { collectToolCalls, estimateTokens, fitState, latestRequest } from './state.js';
+import { collectToolCalls, estimateTokens, fitState, isPinned, latestRequest } from './state.js';
 import type {
   CallAnswer,
   CallDecision,
@@ -330,6 +330,22 @@ export function applyDecisions(
   return kept;
 }
 
+const LOCAL_COMMAND_TAGS =
+  /<(local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message)>[\s\S]*?<\/\1>/g;
+
+/**
+ * Whether a message only echoes a local slash command (`/reload-plugins`,
+ * `/compact`, ...): its caveat, name or output, and no arguments. A command
+ * with arguments usually carries a request, so it stays.
+ */
+export function isLocalCommandEcho(message: Message): boolean {
+  if (message.toolUses.length > 0 || (message.toolResults ?? []).length > 0) return false;
+  if (!LOCAL_COMMAND_TAGS.test(message.text)) return false;
+  LOCAL_COMMAND_TAGS.lastIndex = 0;
+  const rest = message.text.replace(LOCAL_COMMAND_TAGS, '').replace(/<command-args>\s*<\/command-args>/g, '');
+  return rest.trim().length === 0;
+}
+
 /** Characters of text, tool input and tool output a message holds. */
 export function messageChars(message: Message): number {
   let total = message.text.length;
@@ -388,12 +404,21 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
+  // Old local command echoes go too: the engine would copy them, and their
+  // outputs, after every compaction.
+  const echoes = new Set(
+    messages.filter(
+      (message, index) =>
+        !isPinned(index, messages.length, resolved.preserveRecentMessages) &&
+        isLocalCommandEcho(message),
+    ),
+  );
   const kept = applyDecisions(
     messages,
     decisions,
     calls,
     resolved.truncateHeadChars,
-  );
+  ).filter((message) => !echoes.has(message));
   return {
     messages: kept,
     decisions,
