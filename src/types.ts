@@ -66,7 +66,33 @@ export interface CallDecision extends CallAnswer {
   id: string;
   tool: string;
   action: CallAction;
-  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped';
+  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped' | 'turn_dropped';
+}
+
+/** One user request and every message up to the next request. */
+export interface Turn {
+  /** `T01`, `T02`, ... in conversation order. */
+  id: string;
+  /** Index of the request message. */
+  start: number;
+  /** Index after the turn's last message. */
+  end: number;
+  /** The request without engine wrappers, at most 200 characters. */
+  request: string;
+  /** No message of the turn is pinned and the turn is not the last one. */
+  candidate: boolean;
+}
+
+export interface TurnDecision {
+  id: string;
+  start: number;
+  end: number;
+  request: string;
+  /** Jev's probability that the current line of work starts after this turn. */
+  after: number;
+  /** Jev's probability that the turn holds something still true and needed; asked for candidates only. */
+  lasting?: number;
+  dropped: boolean;
 }
 
 export interface HistoryToolCall {
@@ -79,6 +105,8 @@ export interface HistoryToolCall {
 export interface HistoryEntry {
   i: number;
   role: Role;
+  /** The turn the message belongs to (`T01`, ...), when the history is split into turns. */
+  turn?: string;
   text: string;
   /** Structured per call, or one compact line per call once the state has to shrink. */
   tool_calls?: HistoryToolCall[] | string[];
@@ -116,6 +144,12 @@ export interface CompactOptions {
    * question. Default `DEFAULT_READ_ONLY_TOOLS` (Claude Code's read-only tools).
    */
   readOnlyTools?: readonly string[];
+  /** Asks Jev which old turns belong to a finished topic and removes them. Default true. */
+  pruneTopics?: boolean;
+  /** Minimum probability that the current work starts after a turn for it to go. Default 0.8. */
+  topicThreshold?: number;
+  /** A turn whose `lasting` probability reaches this stays. Default 0.3. */
+  lastingThreshold?: number;
 }
 
 export interface ResolvedCompactOptions {
@@ -126,12 +160,17 @@ export interface ResolvedCompactOptions {
   maxRequestTokens: number;
   truncateHeadChars: number;
   readOnlyTools: readonly string[];
+  pruneTopics: boolean;
+  topicThreshold: number;
+  lastingThreshold: number;
 }
 
 export interface CompactResult {
   /** The compacted transcript; untouched messages are the input objects. */
   messages: Message[];
   decisions: CallDecision[];
+  /** One decision per turn when topics were judged, else empty. */
+  turns: TurnDecision[];
   stats: {
     messagesBefore: number;
     messagesAfter: number;
@@ -142,6 +181,7 @@ export interface CompactResult {
     resultsDropped: number;
     callsDropped: number;
     pinned: number;
+    turnsDropped: number;
     stateTokens: number;
     /** Which fitting stage the state needed, '' when no request was made. */
     stateStage: string;

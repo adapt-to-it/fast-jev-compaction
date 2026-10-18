@@ -57,7 +57,7 @@ describe('hook config', () => {
     expect(resolveHookConfig({})).toEqual({
       compactAtPercent: 0,
       minReductionRatio: 0.25,
-      model: 'jev-latest',
+      model: 'jev-1.13.0',
       resumeAfterCompact: true,
       decisionLog: true,
     });

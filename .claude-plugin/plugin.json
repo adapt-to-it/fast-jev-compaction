@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "author": {
     "name": "tamaratran",
@@ -56,11 +56,29 @@
       "description": "Characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
       "default": 300
     },
+    "pruneTopics": {
+      "type": "boolean",
+      "title": "Remove finished topics",
+      "description": "Asks Jev which old turns belong to a topic the current work no longer needs, and removes them.",
+      "default": true
+    },
+    "topicThreshold": {
+      "type": "number",
+      "title": "Topic threshold",
+      "description": "Minimum probability that the current topic started after a turn for that turn to go.",
+      "default": 0.8
+    },
+    "lastingThreshold": {
+      "type": "number",
+      "title": "Lasting fact threshold",
+      "description": "A turn whose lasting-fact score reaches this value stays.",
+      "default": 0.3
+    },
     "model": {
       "type": "string",
       "title": "Jev model",
       "description": "TypeSafe Jev model name.",
-      "default": "jev-latest"
+      "default": "jev-1.13.0"
     },
     "resumeAfterCompact": {
       "type": "boolean",

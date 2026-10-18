@@ -6,10 +6,15 @@ import type {
   ResolvedCompactOptions,
   ToolCall,
   ToolResult,
+  Turn,
 } from './types.js';
 
 export const STATE_CONTEXT =
   'A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, or the full output of that call, still needs to stay in the history verbatim. Whatever is not kept is deleted permanently, but the assistant can always re-run a tool or re-read a file.';
+
+/** Added when the history is split into turns. */
+const TURNS_CONTEXT =
+  ' Other questions ask which turns (a user request and the replies up to the next one, named by the `turn` of each entry) the current work still needs.';
 
 /** Successive caps on the serialised tool input included per call. */
 const INPUT_CHARS = [1000, 200, 60] as const;
@@ -152,6 +157,7 @@ function historyEntries(
   messages: readonly Message[],
   calls: readonly ToolCall[],
   inputChars: number,
+  turns: readonly Turn[],
 ): HistoryEntry[] {
   const byMessage = callsByMessage(calls);
   const entries: HistoryEntry[] = [];
@@ -164,6 +170,8 @@ function historyEntries(
     }));
     if (message.text.trim().length === 0 && toolCalls.length === 0) return;
     const entry: HistoryEntry = { i, role: message.role, text: message.text };
+    const turn = turns.find((t) => i >= t.start && i < t.end);
+    if (turn) entry.turn = turn.id;
     if (toolCalls.length > 0) entry.tool_calls = toolCalls;
     entries.push(entry);
   });
@@ -218,10 +226,11 @@ export function fitState(
   messages: readonly Message[],
   calls: readonly ToolCall[],
   options: Pick<ResolvedCompactOptions, 'maxStateTokens' | 'preserveRecentMessages' | 'goal'>,
+  turns: readonly Turn[] = [],
 ): FittedState {
   const goal = options.goal || goalFromMessages(messages);
   const stateOf = (history: HistoryEntry[]): CompactionState => ({
-    context: STATE_CONTEXT,
+    context: turns.length > 0 ? STATE_CONTEXT + TURNS_CONTEXT : STATE_CONTEXT,
     goal,
     history,
   });
@@ -237,7 +246,7 @@ export function fitState(
   let perEntry: number[] = [];
   let tokens = 0;
   const rebuild = (inputChars: number): void => {
-    history = historyEntries(messages, calls, inputChars);
+    history = historyEntries(messages, calls, inputChars, turns);
     perEntry = history.map(entryTokens);
     tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
   };

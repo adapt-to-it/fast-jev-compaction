@@ -1,8 +1,10 @@
 import { noulAnswer } from './request.js';
 import { collectToolCalls, estimateTokens, fitState, isPinned, latestRequest } from './state.js';
+import { decideTurns, dropTurns, segmentTurns, turnQuestions } from './turns.js';
 import type {
   CallAnswer,
   CallDecision,
+  TurnDecision,
   CompactOptions,
   CompactResult,
   CompactionState,
@@ -90,6 +92,9 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
   readOnlyTools: DEFAULT_READ_ONLY_TOOLS,
+  pruneTopics: true,
+  topicThreshold: 0.8,
+  lastingThreshold: 0.3,
 };
 
 /** Characters of the latest user request quoted in each change question. */
@@ -122,6 +127,9 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
     readOnlyTools: options.readOnlyTools ?? DEFAULT_OPTIONS.readOnlyTools,
+    pruneTopics: options.pruneTopics ?? DEFAULT_OPTIONS.pruneTopics,
+    topicThreshold: finite(options.topicThreshold, DEFAULT_OPTIONS.topicThreshold),
+    lastingThreshold: finite(options.lastingThreshold, DEFAULT_OPTIONS.lastingThreshold),
   };
 }
 
@@ -346,6 +354,29 @@ export function isLocalCommandEcho(message: Message): boolean {
   return rest.trim().length === 0;
 }
 
+/** Jev's per-request and per-question context limits, in estimated tokens. */
+const JEV_REQUEST_TOKENS = 60_000;
+const JEV_QUESTION_TOKENS = 30_000;
+
+/**
+ * The turn questions sized to Jev's limits: the topic Choice drops its option
+ * texts when they would not fit beside the state (the history already tags
+ * each entry with its turn); undefined when even that is too big.
+ */
+function fitTurnQuestions(questions: JevQuestions, stateTokens: number): JevQuestions | undefined {
+  const choice = questions.topic_start;
+  if (!choice || choice.type !== 'choice') return undefined;
+  const sized = { ...questions };
+  if (stateTokens + estimateTokens(JSON.stringify(choice)) > JEV_QUESTION_TOKENS - REQUEST_OVERHEAD_TOKENS) {
+    sized.topic_start = {
+      ...choice,
+      criteria: Object.fromEntries(Object.keys(choice.criteria).map((id) => [id, null])),
+    };
+  }
+  const tokens = stateTokens + estimateTokens(JSON.stringify(sized)) + REQUEST_OVERHEAD_TOKENS;
+  return tokens <= JEV_REQUEST_TOKENS ? sized : undefined;
+}
+
 /** Characters of text, tool input and tool output a message holds. */
 export function messageChars(message: Message): number {
   let total = message.text.length;
@@ -389,21 +420,40 @@ export async function compact(
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
+  let turnRequests = 0;
   const answers = new Map<string, CallAnswer>();
-  if (candidates.length > 0) {
-    const state = fitState(messages, calls, resolved);
+  const turns = resolved.pruneTopics ? segmentTurns(messages, resolved.preserveRecentMessages) : [];
+  let turnDecisions: TurnDecision[] = [];
+  const turnQuestionSet = turnQuestions(turns);
+  if (candidates.length > 0 || Object.keys(turnQuestionSet).length > 0) {
+    const state = fitState(messages, calls, resolved, turns);
     fitted = state;
     const request = latestRequest(messages, REQUEST_QUOTE_CHARS);
-    batches = batchCalls(candidates, state.tokens, { ...resolved, request });
-    const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools, request)),
-    );
+    batches = candidates.length > 0 ? batchCalls(candidates, state.tokens, { ...resolved, request }) : [];
+    const topics = fitTurnQuestions(turnQuestionSet, state.tokens);
+    turnRequests = topics ? 1 : 0;
+    const [answered, topicAnswers] = await Promise.all([
+      Promise.all(
+        batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools, request)),
+      ),
+      // Topics are an extra: a failed request only means no turn is removed.
+      topics
+        ? asker.ask(state.state, topics).then((r) => r.answers, () => ({}))
+        : Promise.resolve({}),
+    ]);
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
+    turnDecisions = turns.length > 0 ? decideTurns(turns, topicAnswers, resolved) : [];
   }
 
-  const decisions = calls.map((call) =>
-    decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
-  );
+  const dropped = turnDecisions.filter((turn) => turn.dropped);
+  const inDroppedTurn = (index: number): boolean =>
+    dropped.some((turn) => index >= turn.start && index < turn.end);
+  const decisions = calls.map((call): CallDecision => {
+    const decision = decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved);
+    return inDroppedTurn(call.callIndex)
+      ? { ...decision, action: 'drop_call', reason: 'turn_dropped' }
+      : decision;
+  });
   // Old local command echoes go too: the engine would copy them, and their
   // outputs, after every compaction.
   const echoes = new Set(
@@ -414,7 +464,7 @@ export async function compact(
     ),
   );
   const kept = applyDecisions(
-    messages,
+    dropTurns(messages, turnDecisions),
     decisions,
     calls,
     resolved.truncateHeadChars,
@@ -422,6 +472,7 @@ export async function compact(
   return {
     messages: kept,
     decisions,
+    turns: turnDecisions,
     stats: {
       messagesBefore: messages.length,
       messagesAfter: kept.length,
@@ -432,9 +483,10 @@ export async function compact(
       resultsDropped: count(decisions, 'result_dropped'),
       callsDropped: count(decisions, 'call_dropped'),
       pinned: count(decisions, 'pinned'),
+      turnsDropped: dropped.length,
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
-      requests: batches.length,
+      requests: batches.length + turnRequests,
       ms: Date.now() - started,
     },
   };

@@ -55,7 +55,17 @@ built-in compaction summary with the original messages.
      call, truncate the result to its
      first `truncateHeadChars` characters plus a one-line note;
    - else → remove the call together with its result.
-7. The message list is rebuilt: a message that loses all its content is
+7. Old topics: the history is split into turns (a user request and the
+   replies up to the next one). In the same round Jev answers a Choice,
+   `topic_start`, on which turn the current work started from, and for each
+   older turn outside the pinned messages a `noul`, `lasting_<turn>`, on
+   whether it holds a constraint, preference or decision that still applies.
+   A turn is removed when the probability that the current topic started
+   after it reaches `topicThreshold` and its `lasting` score stays under
+   `lastingThreshold`. Adjacent removed turns become one line quoting their
+   requests. Removing a turn also removes its reasoning and reminders from
+   the context, which the mod cannot touch otherwise.
+8. The message list is rebuilt: a message that loses all its content is
    removed, untouched messages are returned as the same objects, and no result
    is ever left without its call.
 
@@ -107,7 +117,7 @@ put it in a source file.
 | Option | Default | Description |
 | --- | --- | --- |
 | `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key (`compactMessages`/`JevClient`) |
-| `model` | `jev-latest` | Jev model name |
+| `model` | `jev-1.13.0` | Jev model name |
 | `baseUrl` | `https://api.typesafe.ai/v1/systemone` | System One endpoint |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |
 | `goal` | last 3 user prompts | Ongoing task description included in the state |
@@ -116,6 +126,9 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `pruneTopics` | `true` | Removes old turns on a finished topic |
+| `topicThreshold` | `0.8` | Minimum probability that the current topic started after a turn |
+| `lastingThreshold` | `0.3` | A turn whose `lasting` score reaches this stays |
 | `readOnlyTools` | `DEFAULT_READ_ONLY_TOOLS` | Tools that never change anything and skip the change question (Claude Code's read, search and fetch tools, plus `AskUserQuestion`, `Skill`, `SendMessage` and the other tools that change no file). A `Bash` call also skips it when every command in it only reads (`ls`, `cat`, `grep`, `git status`, `sed -n`, ...) and nothing is redirected to a file |
 
 `result.stats` reports message and character counts before and after, the

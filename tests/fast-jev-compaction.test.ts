@@ -431,7 +431,7 @@ describe('compact', () => {
     const output = await compact(
       messages,
       fakeJev((name) => (name.startsWith('call_') ? 0.9 : 0.1), seen),
-      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 320 },
+      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 320, pruneTopics: false },
     );
 
     expect(output.stats.requests).toBe(seen.length);
@@ -450,6 +450,46 @@ describe('compact', () => {
     expect(output.messages).toHaveLength(messages.length);
     expect(output.stats).toMatchObject({ resultsDropped: 3, kept: 0, callsDropped: 0, pinned: 0 });
     expect(reductionRatio(output)).toBeGreaterThan(0);
+  });
+
+  it('removes an old turn whose topic Jev marks as finished', async () => {
+    const messages = [
+      message('user', 'Set up the repo.'),
+      message('assistant', 'Done.'),
+      message('user', 'Rename the toast text.'),
+      call('r1', 'Edit', { file_path: 'toast.ts' }, 'ok'),
+      result('r1', 'ok'),
+      message('assistant', 'Renamed.'),
+      message('user', 'Now profile the parser.'),
+      message('assistant', 'Profiling.'),
+      message('user', 'go on'),
+    ];
+    const jev: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) =>
+              key === 'topic_start'
+                ? [key, { type: 'choice' as const, choice: 'T03', probabilities: { T01: 0, T02: 0.05, T03: 0.9, T04: 0.05 } }]
+                : [key, { type: 'noul' as const, noul: key.startsWith('lasting_') ? 0.1 : 0.9 }],
+            ),
+          ),
+        };
+      },
+    };
+    const output = await compact(messages, jev, { preserveRecentMessages: 2 });
+    expect(output.turns.map((t) => [t.id, t.dropped])).toEqual([
+      ['T01', false],
+      ['T02', true],
+      ['T03', false],
+      ['T04', false],
+    ]);
+    expect(output.stats.turnsDropped).toBe(1);
+    expect(output.decisions[0]).toMatchObject({ action: 'drop_call', reason: 'turn_dropped' });
+    const texts = output.messages.map((m) => m.text);
+    expect(texts).not.toContain('Renamed.');
+    expect(texts.some((t) => t?.includes('Rename the toast text.'))).toBe(true);
+    expect(texts).toContain('Now profile the parser.');
   });
 
   it('keeps a changing call when Jev says the task depends on its change', async () => {
@@ -513,7 +553,7 @@ describe('HTTP client', () => {
     expect(request.url).toBe('https://api.typesafe.ai/v1/systemone');
     expect(request.headers.authorization).toBe('Bearer k');
     expect(JSON.parse(request.body)).toEqual({
-      model: 'jev-latest',
+      model: 'jev-1.13.0',
       state: { a: 1 },
       questions: { q: { type: 'noul', instructions: 'x' } },
     });

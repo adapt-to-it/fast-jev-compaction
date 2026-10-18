@@ -58,7 +58,7 @@ The plugin declares these `userConfig` values in
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
-| `model` | `jev-latest` |
+| `model` | `jev-1.13.0` |
 | `resumeAfterCompact` | `true` |
 | `decisionLog` | `true` |
 | `logDir` | `~/.claude/fast-jev-compaction/logs` |

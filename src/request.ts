@@ -1,7 +1,8 @@
 import type { JevAnswer, JevQuestions, JevResponse, JevState } from './types.js';
 
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone';
-export const DEFAULT_MODEL = 'jev-latest';
+/** Pinned: the thresholds are tuned on this version's answers. */
+export const DEFAULT_MODEL = 'jev-1.13.0';
 
 export interface JevRequest {
   url: string;

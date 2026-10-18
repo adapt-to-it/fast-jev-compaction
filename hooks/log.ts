@@ -20,6 +20,7 @@ export type CompactionLog = {
   messagesAfter?: number;
   latestRequest: string;
   stats?: CompactResult['stats'];
+  turns?: CompactResult['turns'];
   decisions: Array<{
     id: string;
     tool: string;
@@ -77,6 +78,7 @@ export function compactionLog(
   if (input.note) log.note = input.note;
   if (messagesAfter !== undefined) log.messagesAfter = messagesAfter;
   if (result) log.stats = result.stats;
+  if (result && result.turns.length > 0) log.turns = result.turns;
   return log;
 }
 
