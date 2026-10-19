@@ -82,7 +82,7 @@ describe('turnQuestions', () => {
     const lasting = questions.lasting_T01!;
     expect(lasting.type).toBe('noul');
     expect(JSON.stringify(lasting)).not.toContain('{id}');
-    expect(lasting.instructions).toContain('Turn T01');
+    expect(lasting.instructions).toContain('In turn T01');
     expect(lasting.criteria?.true).toContain('T01');
   });
 
@@ -134,6 +134,19 @@ describe('decideTurns', () => {
   });
 });
 
+describe('engine notices', () => {
+  it('never opens a turn on "Tool loaded."', () => {
+    const turns = segmentTurns(
+      [message('user', 'req A'), message('assistant', 'a1'), message('user', 'Tool loaded.'), message('user', 'req B')],
+      0,
+    );
+    expect(turns.map((t) => [t.request, t.start, t.end])).toEqual([
+      ['req A', 0, 3],
+      ['req B', 3, 4],
+    ]);
+  });
+});
+
 describe('dropTurns', () => {
   const messages = [
     message('user', 'req A'),
@@ -145,6 +158,43 @@ describe('dropTurns', () => {
     message('user', 'req D'),
     message('assistant', 'd1'),
   ];
+
+  it('merges an earlier placeholder into the new one instead of nesting it', () => {
+    const earlier =
+      '[fast-jev-compaction removed 1 earlier turn(s) whose topic the current work no longer needs. Their requests: "req 0"]';
+    const history = [
+      message('user', 'req A'),
+      message('assistant', 'a1'),
+      message('user', earlier),
+      message('user', 'req B'),
+      message('assistant', 'b1'),
+      message('user', 'req C'),
+    ];
+    const turns = segmentTurns(history, 0);
+    expect(turns.map((t) => t.request)).toEqual(['req A', 'req B', 'req C']);
+    const out = dropTurns(history, [
+      decision('T01', 0, 3, false, 'req A'),
+      decision('T02', 3, 5, true, 'req B'),
+      decision('T03', 5, 6, false, 'req C'),
+    ]);
+    expect(out.map((m) => m.text)).toEqual([
+      'req A',
+      'a1',
+      '[fast-jev-compaction removed 2 earlier turn(s) whose topic the current work no longer needs. Their requests: "req 0"; "req B"]',
+      'req C',
+    ]);
+  });
+
+  it('keeps an old placeholder when the turn it sits in is removed', () => {
+    const earlier =
+      '[fast-jev-compaction removed 1 earlier turn(s) whose topic the current work no longer needs. Their requests: "req 0"]';
+    const history = [message('user', 'req A'), message('user', earlier), message('user', 'req B')];
+    const out = dropTurns(history, [decision('T01', 0, 2, true, 'req A'), decision('T02', 2, 3, false, 'req B')]);
+    expect(out.map((m) => m.text)).toEqual([
+      '[fast-jev-compaction removed 2 earlier turn(s) whose topic the current work no longer needs. Their requests: "req A"; "req 0"]',
+      'req B',
+    ]);
+  });
 
   it('leaves one placeholder for two adjacent dropped turns and keeps the other messages as they are', () => {
     const out = dropTurns(messages, [

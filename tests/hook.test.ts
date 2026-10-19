@@ -200,6 +200,13 @@ describe('latest request', () => {
     expect(latestRequest(messages)).toBe('Fix the parser test.');
     expect(latestRequest([message('user', '<system-reminder>x</system-reminder>\nnow add docs')])).toBe('now add docs');
     expect(latestRequest([message('user', '<command-name>/x</command-name>')])).toBe('');
+    expect(latestRequest([message('user', 'now add docs'), message('user', 'Tool loaded.')])).toBe('now add docs');
+    expect(
+      latestRequest([
+        message('user', 'now add docs'),
+        message('user', '[fast-jev-compaction removed 1 earlier turn(s) whose topic the current work no longer needs. Their requests: "x"]'),
+      ]),
+    ).toBe('now add docs');
   });
 });
 

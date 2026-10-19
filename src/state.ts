@@ -191,13 +191,25 @@ export function latestRequest(
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;
     if (message.role !== 'user') continue;
-    const text = message.text
-      .replace(/<([a-z][\w-]*)>[\s\S]*?<\/\1>/g, '')
-      .replace(/\[Request interrupted by user[^\]]*\]/g, '')
-      .trim();
+    const text = requestText(message.text);
     if (text) return text.slice(0, limit);
   }
   return '';
+}
+
+/** Start of the line that stands for turns this mod removed. */
+export const REMOVED_TURNS_PREFIX = '[fast-jev-compaction removed ';
+
+/** User messages the engine or this mod write: never a request. */
+const NOTICE = /^(?:Tool loaded\.$|\[fast-jev-compaction removed )/;
+
+/** A user message's own text, without engine wrappers and notices; empty when nothing is left. */
+export function requestText(text: string): string {
+  const own = text
+    .replace(/<([a-z][\w-]*)>[\s\S]*?<\/\1>/g, '')
+    .replace(/\[Request interrupted by user[^\]]*\]/g, '')
+    .trim();
+  return NOTICE.test(own) ? '' : own;
 }
 
 /** The last three user prompts, as the default `goal`. */
@@ -206,11 +218,11 @@ export function goalFromMessages(messages: readonly Message[]): string {
     .filter(
       (message) =>
         message.role === 'user' &&
-        message.text.trim().length > 0 &&
+        requestText(message.text).length > 0 &&
         (message.toolResults ?? []).length === 0,
     )
     .slice(-3)
-    .map((message) => truncate(message.text, 500))
+    .map((message) => truncate(requestText(message.text), 500))
     .join('\n');
 }
 

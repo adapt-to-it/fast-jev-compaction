@@ -1,5 +1,5 @@
 import { isLocalCommandEcho } from './compact.js';
-import { isPinned, latestRequest } from './state.js';
+import { isPinned, latestRequest, REMOVED_TURNS_PREFIX } from './state.js';
 import type { JevAnswer, JevQuestions, Message, Turn, TurnDecision } from './types.js';
 
 export const TOPIC_START_INSTRUCTIONS =
@@ -8,9 +8,9 @@ export const TOPIC_START_INSTRUCTIONS =
 /** `{id}` stands for the turn id. */
 export const LASTING_QUESTION = {
   instructions:
-    'Turn {id} (the `history` entries whose `turn` is "{id}") sets something that still holds and could matter to the latest requests in `goal`',
-  true: 'In {id} the user or assistant set a constraint, preference, decision, convention or a fact about the project or environment that still applies, such as files not to touch, a chosen approach, a path or a naming rule',
-  false: '{id} only holds a one-off question, explanation, exploration or task whose details the current work does not rely on',
+    'In turn {id} (the `history` entries whose `turn` is "{id}") the user set a rule that the work on the latest requests in `goal` must still follow',
+  true: 'In {id} the user stated or approved a constraint, preference or decision that still applies and that reading the files would not reveal, such as files not to touch, a chosen approach or a style rule',
+  false: '{id} only holds a task, question, confirmation, explanation or exploration; whatever it found is in the files or can be found again',
 } as const;
 
 export const MAX_CHOICE_OPTIONS = 255;
@@ -113,6 +113,16 @@ export function decideTurns(
   });
 }
 
+function removedText(count: number, requests: string): string {
+  return `${REMOVED_TURNS_PREFIX}${count} earlier turn(s) whose topic the current work no longer needs. Their requests: ${requests}]`;
+}
+
+function parseRemoved(text: string): { count: number; requests: string } | undefined {
+  if (!text.startsWith(REMOVED_TURNS_PREFIX)) return undefined;
+  const match = /^\S+ removed (\d+) earlier turn\(s\)[^:]*: ([\s\S]*)\]$/.exec(text);
+  return match ? { count: Number(match[1]), requests: match[2]! } : undefined;
+}
+
 /** Removes the dropped turns, leaving one placeholder message per run of adjacent dropped turns. */
 export function dropTurns(messages: readonly Message[], decisions: readonly TurnDecision[]): Message[] {
   const gone = new Array<boolean>(messages.length).fill(false);
@@ -132,18 +142,29 @@ export function dropTurns(messages: readonly Message[], decisions: readonly Turn
     }
   }
   const out: Message[] = [];
+  // Every placeholder, old or new, merges with one right before it.
+  const pushRemoved = (count: number, requests: string): void => {
+    const last = out[out.length - 1];
+    const previous = last ? parseRemoved(last.text) : undefined;
+    if (previous) out.pop();
+    out.push({
+      role: 'user',
+      text: removedText(
+        count + (previous?.count ?? 0),
+        previous ? `${previous.requests}; ${requests}` : requests,
+      ),
+      toolUses: [],
+    });
+  };
   messages.forEach((message, index) => {
     const run = runs.get(index);
     if (run) {
-      const requests = run.map((decision) => `"${decision.request}"`).join('; ');
-      out.push({
-        role: 'user',
-        text: `[fast-jev-compaction removed ${run.length} earlier turn(s) whose topic the current work no longer needs. Their requests: ${requests}]`,
-        toolUses: [],
-      });
-    } else if (!gone[index]) {
-      out.push(message);
+      pushRemoved(run.length, run.map((decision) => `"${decision.request}"`).join('; '));
     }
+    // An old placeholder survives the removal of the turn it sits in.
+    const removed = parseRemoved(message.text);
+    if (removed && message.role === 'user') pushRemoved(removed.count, removed.requests);
+    else if (!gone[index] && !run) out.push(message);
   });
   return out;
 }
