@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compactionLog, latestRequest, logPath } from '../hooks/log.js';
 import {
+  jevAsker,
   compactSession,
   reusePrecomputed,
   headline,
@@ -215,5 +216,39 @@ describe('toast', () => {
     const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
     const { result } = await compactSession(transcript(), config, jevFetch(() => 0.1));
     expect(headline(result)).toMatch(/^7 → \d+ messages, context −\d+% \(2 tool calls removed\)$/);
+  });
+});
+
+describe('jevAsker', () => {
+  const ok = { status: 200, ok: true, text: JSON.stringify({ answers: { q: { type: 'noul', noul: 0.7 } } }) };
+
+  it('retries once after a dropped connection', async () => {
+    let calls = 0;
+    const asker = jevAsker(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('ECONNRESET');
+        return ok;
+      },
+      'k',
+      'jev-1.13.0',
+    );
+    const response = await asker.ask({}, { q: { type: 'noul', instructions: 'x' } });
+    expect(calls).toBe(2);
+    expect(response.answers.q).toMatchObject({ noul: 0.7 });
+  });
+
+  it('retries once after a server error and gives up after the second', async () => {
+    let calls = 0;
+    const asker = jevAsker(
+      async () => {
+        calls += 1;
+        return { status: 503, ok: false, text: 'busy' };
+      },
+      'k',
+      'jev-1.13.0',
+    );
+    await expect(asker.ask({}, { q: { type: 'noul', instructions: 'x' } })).rejects.toThrow();
+    expect(calls).toBe(2);
   });
 });

@@ -185,6 +185,15 @@ describe('dropTurns', () => {
     ]);
   });
 
+  it('quotes the whole request of a removed turn, beyond the 200 characters of the topic options', () => {
+    const long = `rule: ${'x'.repeat(400)} end`;
+    const out = dropTurns(
+      [message('user', long), message('assistant', 'ok'), message('user', 'req B')],
+      [decision('T01', 0, 2, true, long.slice(0, 200)), decision('T02', 2, 3, false, 'req B')],
+    );
+    expect(out[0]!.text).toContain(' end"]');
+  });
+
   it('keeps an old placeholder when the turn it sits in is removed', () => {
     const earlier =
       '[fast-jev-compaction removed 1 earlier turn(s) whose topic the current work no longer needs. Their requests: "req 0"]';

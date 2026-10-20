@@ -8,13 +8,15 @@ export const TOPIC_START_INSTRUCTIONS =
 /** `{id}` stands for the turn id. */
 export const LASTING_QUESTION = {
   instructions:
-    'In turn {id} (the `history` entries whose `turn` is "{id}") the user set a rule that the work on the latest requests in `goal` must still follow',
-  true: 'In {id} the user stated or approved a constraint, preference or decision that still applies and that reading the files would not reveal, such as files not to touch, a chosen approach or a style rule',
-  false: '{id} only holds a task, question, confirmation, explanation or exploration; whatever it found is in the files or can be found again',
+    'In turn {id} (the `history` entries whose `turn` is "{id}") the user set something that still applies to the work in `goal` or to later steps',
+  true: 'In {id} the user stated or approved a goal of the project, a constraint, preference or decision, a rule for later steps, or a fact about the environment (a host, domain, network, device or access), such as files not to touch, a chosen approach, a style to follow or a setting that must stay configurable',
+  false: '{id} only holds a one-off task that is done, a question, a confirmation, a bug report that was fixed, an explanation or an exploration',
 } as const;
 
 export const MAX_CHOICE_OPTIONS = 255;
 export const REQUEST_CHARS = 200;
+/** The placeholder keeps the user's own words, which carry the rules they set. */
+export const REMOVED_REQUEST_CHARS = 1000;
 
 /** A message that opens a turn: a user prompt with text of its own, not a tool result or a command echo. */
 function isRequest(message: Message): boolean {
@@ -159,7 +161,12 @@ export function dropTurns(messages: readonly Message[], decisions: readonly Turn
   messages.forEach((message, index) => {
     const run = runs.get(index);
     if (run) {
-      pushRemoved(run.length, run.map((decision) => `"${decision.request}"`).join('; '));
+      pushRemoved(
+        run.length,
+        run
+          .map((decision) => `"${latestRequest([messages[decision.start]!], REMOVED_REQUEST_CHARS)}"`)
+          .join('; '),
+      );
     }
     // An old placeholder survives the removal of the turn it sits in.
     const removed = parseRemoved(message.text);

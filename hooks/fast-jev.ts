@@ -117,11 +117,16 @@ export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): Jev
   return {
     async ask(state, questions) {
       const request = buildJevRequest({ apiKey, model }, state, questions);
-      const response = await fetchFn(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      });
+      const send = () =>
+        fetchFn(request.url, { method: request.method, headers: request.headers, body: request.body });
+      // One retry for a dropped connection or a server error.
+      let response: HookFetchResponse;
+      try {
+        response = await send();
+        if (response.status >= 500) response = await send();
+      } catch {
+        response = await send();
+      }
       return parseJevResponse(response.status, response.ok, response.text);
     },
   };
