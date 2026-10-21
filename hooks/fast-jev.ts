@@ -25,6 +25,8 @@ import type {
 const HOOK_DEFAULTS = {
   compactAtPercent: 0,
   minReductionRatio: 0.25,
+  smallContextChars: 100_000,
+  summarizeShare: 0.75,
   model: DEFAULT_MODEL,
   resumeAfterCompact: true,
   decisionLog: true,
@@ -53,6 +55,10 @@ export type HookConfig = CompactOptions & {
   apiKey?: string;
   compactAtPercent: number;
   minReductionRatio: number;
+  /** At or below these characters the shortened results stand, however little they cut: no summary runs. */
+  smallContextChars: number;
+  /** Share of the text the built-in summarizer gets when no topic is finished. */
+  summarizeShare: number;
   model: string;
   resumeAfterCompact: boolean;
   /** Writes one JSON record per compaction under `logDir`. */
@@ -95,6 +101,8 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       'minReductionRatio',
       HOOK_DEFAULTS.minReductionRatio,
     ),
+    smallContextChars: optionNumber(options, 'smallContextChars', HOOK_DEFAULTS.smallContextChars),
+    summarizeShare: optionNumber(options, 'summarizeShare', HOOK_DEFAULTS.summarizeShare),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
     resumeAfterCompact:
       typeof options['resumeAfterCompact'] === 'boolean'
@@ -401,17 +409,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
           { ...config, resultsOnly: true },
           fetchFn,
         );
-        if (reductionRatio(result) < config.minReductionRatio) {
+        // A small context keeps its shortened results: a summary there costs time and saves little.
+        const small = result.stats.charsBefore <= config.smallContextChars && reductionRatio(result) > 0;
+        if (!small && reductionRatio(result) < config.minReductionRatio) {
           const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
           if (!isPrecompute) {
             notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
           }
-          // No finished topic and little to shorten: only the older half is summarized.
+          // No finished topic and little to shorten: the older part is summarized, the newest stays.
           const cut = isPrecompute
             ? 0
-            : olderPartCut(event.messages, 0.5, resolveOptions(config).preserveRecentMessages, messageChars);
+            : olderPartCut(event.messages, config.summarizeShare, resolveOptions(config).preserveRecentMessages, messageChars);
           if (cut > 0) {
-            const done = await summarizeOlder(cut, 'in the older half', planned);
+            const done = await summarizeOlder(cut, 'in the older part', planned);
             if (done) return done;
           }
           await record({ outcome: 'fallback', note }, result, undefined, planned);
