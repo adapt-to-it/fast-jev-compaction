@@ -146,6 +146,8 @@ export interface CompactOptions {
   readOnlyTools?: readonly string[];
   /** Asks Jev which old turns belong to a finished topic and removes them. Default true. */
   pruneTopics?: boolean;
+  /** Only truncates tool results: every call and every text stays. Default false. */
+  resultsOnly?: boolean;
   /** Minimum probability that the current work starts after a turn for it to go. Default 0.8. */
   topicThreshold?: number;
   /** A turn whose `lasting` probability reaches this stays. Default 0.3. */
@@ -161,6 +163,7 @@ export interface ResolvedCompactOptions {
   truncateHeadChars: number;
   readOnlyTools: readonly string[];
   pruneTopics: boolean;
+  resultsOnly: boolean;
   topicThreshold: number;
   lastingThreshold: number;
 }

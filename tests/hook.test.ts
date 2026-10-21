@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compactionLog, latestRequest, logPath } from '../hooks/log.js';
 import {
+  filesNote,
   jevAsker,
   compactSession,
   reusePrecomputed,
@@ -215,7 +216,7 @@ describe('toast', () => {
   it('reads as one short sentence', async () => {
     const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
     const { result } = await compactSession(transcript(), config, jevFetch(() => 0.1));
-    expect(headline(result)).toMatch(/^7 → \d+ messages, context −\d+% \(2 tool calls removed\)$/);
+    expect(headline(result)).toMatch(/^7 → \d+ messages, context −\d+% \(\d+ tool results shortened\)$/);
   });
 });
 
@@ -250,5 +251,15 @@ describe('jevAsker', () => {
     );
     await expect(asker.ask({}, { q: { type: 'noul', instructions: 'x' } })).rejects.toThrow();
     expect(calls).toBe(2);
+  });
+});
+
+describe('filesNote', () => {
+  it('lists every file with its name and action, one per line', () => {
+    expect(filesNote({ written: ['/r/src/a.ts'], read: ['/r/b.md'], mentioned: [] })).toBe(
+      '[fast-jev-compaction] Files used in the summarized part of the conversation (re-read any you need):\n' +
+        '/r/src/a.ts a.ts "write"\n/r/b.md b.md "read"',
+    );
+    expect(filesNote({ written: [], read: [], mentioned: [] })).toBe('');
   });
 });

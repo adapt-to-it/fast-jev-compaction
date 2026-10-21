@@ -1,6 +1,7 @@
 import type { SessionCompactTrigger, SessionMessage } from 'claude-code';
 
 import { collectToolCalls, latestRequest as requestOf } from '../src/state.js';
+import type { TouchedFiles } from '../src/plan.js';
 import type { CompactResult } from '../src/types.js';
 
 /** Characters of a call input kept in the log. */
@@ -8,7 +9,7 @@ const INPUT_CHARS = 400;
 /** Characters of the latest user request kept in the log. */
 const REQUEST_CHARS = 1000;
 
-export type CompactionOutcome = 'applied' | 'fallback' | 'precomputed' | 'reused' | 'error';
+export type CompactionOutcome = 'summarized' | 'applied' | 'fallback' | 'precomputed' | 'reused' | 'error';
 
 export type CompactionLog = {
   at: string;
@@ -21,6 +22,11 @@ export type CompactionLog = {
   latestRequest: string;
   stats?: CompactResult['stats'];
   turns?: CompactResult['turns'];
+  /** Summary path: the prompt the messages were checked against, the cut and the files told to the summarizer. */
+  reference?: string;
+  cut?: number;
+  obsoleteShare?: number;
+  files?: TouchedFiles;
   decisions: Array<{
     id: string;
     tool: string;

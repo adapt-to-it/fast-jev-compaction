@@ -93,6 +93,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   truncateHeadChars: 300,
   readOnlyTools: DEFAULT_READ_ONLY_TOOLS,
   pruneTopics: true,
+  resultsOnly: false,
   topicThreshold: 0.8,
   lastingThreshold: 0.3,
 };
@@ -128,6 +129,7 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
     ),
     readOnlyTools: options.readOnlyTools ?? DEFAULT_OPTIONS.readOnlyTools,
     pruneTopics: options.pruneTopics ?? DEFAULT_OPTIONS.pruneTopics,
+    resultsOnly: options.resultsOnly ?? DEFAULT_OPTIONS.resultsOnly,
     topicThreshold: finite(options.topicThreshold, DEFAULT_OPTIONS.topicThreshold),
     lastingThreshold: finite(options.lastingThreshold, DEFAULT_OPTIONS.lastingThreshold),
   };
@@ -226,16 +228,20 @@ async function askBatch(
   batch: readonly ToolCall[],
   readOnlyTools: readonly string[],
   request: string,
+  resultsOnly = false,
 ): Promise<Map<string, CallAnswer>> {
-  const questions: JevQuestions = Object.assign(
+  const all: JevQuestions = Object.assign(
     {},
     ...batch.map((call) => questionsFor(call, readOnlyTools, request)),
   );
+  const questions = resultsOnly
+    ? Object.fromEntries(Object.entries(all).filter(([key]) => key.startsWith('result_')))
+    : all;
   const { answers } = await asker.ask(state, questions);
   return new Map(
     batch.map((call) => {
       const answer: CallAnswer = {
-        keepCall: noulAnswer(answers, `call_${call.id}`),
+        keepCall: resultsOnly ? 1 : noulAnswer(answers, `call_${call.id}`),
         keepResult: noulAnswer(answers, `result_${call.id}`),
       };
       if (`change_${call.id}` in questions) {
@@ -363,7 +369,7 @@ const JEV_QUESTION_TOKENS = 30_000;
  * texts when they would not fit beside the state (the history already tags
  * each entry with its turn); undefined when even that is too big.
  */
-function fitTurnQuestions(questions: JevQuestions, stateTokens: number): JevQuestions | undefined {
+export function fitTurnQuestions(questions: JevQuestions, stateTokens: number): JevQuestions | undefined {
   const choice = questions.topic_start;
   if (!choice || choice.type !== 'choice') return undefined;
   const sized = { ...questions };
@@ -422,7 +428,7 @@ export async function compact(
   let batches: ToolCall[][] = [];
   let turnRequests = 0;
   const answers = new Map<string, CallAnswer>();
-  const turns = resolved.pruneTopics ? segmentTurns(messages, resolved.preserveRecentMessages) : [];
+  const turns = resolved.pruneTopics && !resolved.resultsOnly ? segmentTurns(messages, resolved.preserveRecentMessages) : [];
   let turnDecisions: TurnDecision[] = [];
   const turnQuestionSet = turnQuestions(turns);
   if (candidates.length > 0 || Object.keys(turnQuestionSet).length > 0) {
@@ -434,7 +440,9 @@ export async function compact(
     turnRequests = topics ? 1 : 0;
     const [answered, topicAnswers] = await Promise.all([
       Promise.all(
-        batches.map((batch) => askBatch(asker, state.state, batch, resolved.readOnlyTools, request)),
+        batches.map((batch) =>
+          askBatch(asker, state.state, batch, resolved.readOnlyTools, request, resolved.resultsOnly),
+        ),
       ),
       // Topics are an extra: a failed request only means no turn is removed.
       topics

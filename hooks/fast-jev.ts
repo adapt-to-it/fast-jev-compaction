@@ -8,7 +8,9 @@ import type {
   TurnCompleteInput,
 } from 'claude-code';
 
-import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
+import { compact, messageChars, reductionRatio, resolveOptions } from '../src/compact.js';
+import { planTopics, summaryInstructions, touchedFiles, type TouchedFiles } from '../src/plan.js';
+import { latestRequest } from '../src/state.js';
 import { compactionLog, logPath, type CompactionLog } from './log.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
@@ -202,6 +204,20 @@ export async function compactSession(
   return { result, messages: toSessionMessages(messages, result.messages) };
 }
 
+/**
+ * The files the summarized part used, one per line as `<path> <name> "<action>"`:
+ * the summary may drop them, this list stays, so the model knows what to re-read.
+ */
+export function filesNote(files: TouchedFiles): string {
+  const lines = [
+    ...files.written.map((path) => [path, 'write'] as const),
+    ...files.read.map((path) => [path, 'read'] as const),
+    ...files.mentioned.map((path) => [path, 'mentioned'] as const),
+  ].map(([path, action]) => `${path} ${path.split('/').pop() ?? path} "${action}"`);
+  if (lines.length === 0) return '';
+  return `[fast-jev-compaction] Files used in the summarized part of the conversation (re-read any you need):\n${lines.join('\n')}`;
+}
+
 function percent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
@@ -222,7 +238,7 @@ export function summarize(result: CompactResult): string {
 /** The toast line: what changed for the person, in one short sentence. */
 export function headline(result: CompactResult): string {
   const { stats } = result;
-  return `${stats.messagesBefore} → ${stats.messagesAfter} messages, context −${percent(reductionRatio(result))} (${stats.callsDropped} tool calls removed)`;
+  return `${stats.messagesBefore} → ${stats.messagesAfter} messages, context −${percent(reductionRatio(result))} (${stats.resultsDropped} tool results shortened)`;
 }
 
 async function getApiKey(
@@ -288,6 +304,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       log: Pick<Parameters<typeof compactionLog>[0], 'outcome' | 'note'>,
       result?: CompactResult,
       after?: number,
+      extra?: Partial<CompactionLog>,
     ) => {
       if (!configured.decisionLog) return;
       try {
@@ -302,6 +319,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           result,
           after,
         );
+        Object.assign(entry, extra);
         const dir = configured.logDir ?? `${await $.env.get('HOME')}/.claude/fast-jev-compaction/logs`;
         await $.fs.write(logPath(dir, entry), `${JSON.stringify(entry, null, 2)}\n`);
       } catch {
@@ -322,16 +340,56 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (!isPrecompute) $.ui.status('Jev is compacting the context…');
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
-      const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
+      const fetchFn: HookFetch = async (url, init) => {
         const response = await $.http.fetch(url, init);
         return { status: response.status, ok: response.ok, text: response.text };
-      });
+      };
+      // Finished topics go to the built-in summarizer, alone; the rest stays as it is.
+      let planned: Partial<CompactionLog> | undefined;
+      if (!isPrecompute && config.pruneTopics !== false && config.apiKey) {
+        const reference = event.instructions?.trim() ?? '';
+        // A failed plan only means nothing is summarized: the results path still runs.
+        const plan = await planTopics(
+          event.messages,
+          jevAsker(fetchFn, config.apiKey, config.model),
+          resolveOptions(config),
+          reference,
+        ).catch(() => ({ cut: 0, turns: [], stateTokens: 0, stateStage: '' }));
+        const obsolete = event.messages.slice(0, plan.cut);
+        const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
+        const share = total > 0 ? obsolete.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
+        const ref = reference || latestRequest(event.messages, 1000);
+        const files = touchedFiles(obsolete);
+        planned = { reference: ref, cut: plan.cut, obsoleteShare: Math.round(share * 100) / 100, turns: plan.turns, files };
+        if (plan.cut > 0 && share >= config.minReductionRatio) {
+          $.ui.status('Claude is summarizing the finished topics…');
+          const summarized = await next({ ...event, messages: obsolete, instructions: summaryInstructions(ref, files) });
+          if (summarized.messages) {
+            const note = filesNote(files);
+            const messages = [
+              ...summarized.messages,
+              ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
+              ...event.messages.slice(plan.cut),
+            ];
+            const outcome = `${obsolete.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)`;
+            notify($, `${obsolete.length} messages on finished topics summarized, ${event.messages.length - plan.cut} kept as they are`);
+            await record({ outcome: 'summarized', note: outcome }, undefined, messages.length, planned);
+            return { messages };
+          }
+        }
+      }
+      // Nothing finished to summarize: only old tool results are shortened.
+      const { result, messages } = await compactSession(
+        event.messages,
+        { ...config, resultsOnly: true },
+        fetchFn,
+      );
       if (reductionRatio(result) < config.minReductionRatio) {
         const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
         if (!isPrecompute) {
           notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
         }
-        await record({ outcome: 'fallback', note }, result);
+        await record({ outcome: 'fallback', note }, result, undefined, planned);
         return next(event);
       }
       if (isPrecompute) {
@@ -340,7 +398,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { messages };
       }
       notify($, headline(result));
-      await record({ outcome: 'applied', note: summarize(result) }, result, messages.length);
+      await record({ outcome: 'applied', note: summarize(result) }, result, messages.length, planned);
       return { messages };
     } catch (error) {
       const note = error instanceof Error ? error.message : String(error);
