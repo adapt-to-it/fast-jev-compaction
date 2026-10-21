@@ -298,116 +298,123 @@ export const register: Register = (on: On, options: PluginOptions) => {
   let precomputed: Precomputed | undefined;
 
   on('session.compact', async ($, event, next) => {
-    const isMain = event.agentId === undefined;
-    const isPrecompute = event.trigger === 'precompute';
-    const record = async (
-      log: Pick<Parameters<typeof compactionLog>[0], 'outcome' | 'note'>,
-      result?: CompactResult,
-      after?: number,
-      extra?: Partial<CompactionLog>,
-    ) => {
-      if (!configured.decisionLog) return;
-      try {
-        const entry: CompactionLog = compactionLog(
-          {
-            ...log,
-            sessionId: await $.session.id(),
-            trigger: event.trigger,
-            messages: event.messages,
-            preserveRecentMessages: resolveOptions(configured).preserveRecentMessages,
-          },
-          result,
-          after,
-        );
-        Object.assign(entry, extra);
-        const dir = configured.logDir ?? `${await $.env.get('HOME')}/.claude/fast-jev-compaction/logs`;
-        await $.fs.write(logPath(dir, entry), `${JSON.stringify(entry, null, 2)}\n`);
-      } catch {
-        // The log is a diagnostic: a failed write never changes the compaction.
-      }
-    };
-
-    // The engine compacts what was precomputed, plus what came after: answer at once.
-    const reused = isMain && !isPrecompute ? reusePrecomputed(precomputed, event.messages) : undefined;
-    if (reused) {
-      precomputed = undefined;
-      notify($, `${event.messages.length} → ${reused.length} messages, from the precomputed compaction`);
-      await record({ outcome: 'reused' }, undefined, reused.length);
-      return { messages: reused };
-    }
-    // A new precompute replaces the last one, whatever it comes to.
-    if (isMain && isPrecompute) precomputed = undefined;
-    if (!isPrecompute) $.ui.status('Jev is compacting the context…');
-    try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
-      const fetchFn: HookFetch = async (url, init) => {
-        const response = await $.http.fetch(url, init);
-        return { status: response.status, ok: response.ok, text: response.text };
+    // The text after `/compact` is the next prompt: it runs once the compaction stands.
+    const followUp =
+      event.trigger === 'manual' && event.agentId === undefined ? event.instructions?.trim() : undefined;
+    const outcome = await (async () => {
+      const isMain = event.agentId === undefined;
+      const isPrecompute = event.trigger === 'precompute';
+      const record = async (
+        log: Pick<Parameters<typeof compactionLog>[0], 'outcome' | 'note'>,
+        result?: CompactResult,
+        after?: number,
+        extra?: Partial<CompactionLog>,
+      ) => {
+        if (!configured.decisionLog) return;
+        try {
+          const entry: CompactionLog = compactionLog(
+            {
+              ...log,
+              sessionId: await $.session.id(),
+              trigger: event.trigger,
+              messages: event.messages,
+              preserveRecentMessages: resolveOptions(configured).preserveRecentMessages,
+            },
+            result,
+            after,
+          );
+          Object.assign(entry, extra);
+          const dir = configured.logDir ?? `${await $.env.get('HOME')}/.claude/fast-jev-compaction/logs`;
+          await $.fs.write(logPath(dir, entry), `${JSON.stringify(entry, null, 2)}\n`);
+        } catch {
+          // The log is a diagnostic: a failed write never changes the compaction.
+        }
       };
-      // Finished topics go to the built-in summarizer, alone; the rest stays as it is.
-      let planned: Partial<CompactionLog> | undefined;
-      if (!isPrecompute && config.pruneTopics !== false && config.apiKey) {
-        const reference = event.instructions?.trim() ?? '';
-        // A failed plan only means nothing is summarized: the results path still runs.
-        const plan = await planTopics(
-          event.messages,
-          jevAsker(fetchFn, config.apiKey, config.model),
-          resolveOptions(config),
-          reference,
-        ).catch(() => ({ cut: 0, turns: [], stateTokens: 0, stateStage: '' }));
-        const obsolete = event.messages.slice(0, plan.cut);
-        const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
-        const share = total > 0 ? obsolete.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
-        const ref = reference || latestRequest(event.messages, 1000);
-        const files = touchedFiles(obsolete);
-        planned = { reference: ref, cut: plan.cut, obsoleteShare: Math.round(share * 100) / 100, turns: plan.turns, files };
-        if (plan.cut > 0 && share >= config.minReductionRatio) {
-          $.ui.status('Claude is summarizing the finished topics…');
-          const summarized = await next({ ...event, messages: obsolete, instructions: summaryInstructions(ref, files) });
-          if (summarized.messages) {
-            const note = filesNote(files);
-            const messages = [
-              ...summarized.messages,
-              ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
-              ...event.messages.slice(plan.cut),
-            ];
-            const outcome = `${obsolete.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)`;
-            notify($, `${obsolete.length} messages on finished topics summarized, ${event.messages.length - plan.cut} kept as they are`);
-            await record({ outcome: 'summarized', note: outcome }, undefined, messages.length, planned);
-            return { messages };
+
+      // The engine compacts what was precomputed, plus what came after: answer at once.
+      const reused = isMain && !isPrecompute ? reusePrecomputed(precomputed, event.messages) : undefined;
+      if (reused) {
+        precomputed = undefined;
+        notify($, `${event.messages.length} → ${reused.length} messages, from the precomputed compaction`);
+        await record({ outcome: 'reused' }, undefined, reused.length);
+        return { messages: reused };
+      }
+      // A new precompute replaces the last one, whatever it comes to.
+      if (isMain && isPrecompute) precomputed = undefined;
+      if (!isPrecompute) $.ui.status('Jev is compacting the context…');
+      try {
+        const config = { ...configured, apiKey: await getApiKey($, configured) };
+        const fetchFn: HookFetch = async (url, init) => {
+          const response = await $.http.fetch(url, init);
+          return { status: response.status, ok: response.ok, text: response.text };
+        };
+        // Finished topics go to the built-in summarizer, alone; the rest stays as it is.
+        let planned: Partial<CompactionLog> | undefined;
+        if (!isPrecompute && config.pruneTopics !== false && config.apiKey) {
+          const reference = event.instructions?.trim() ?? '';
+          // A failed plan only means nothing is summarized: the results path still runs.
+          const plan = await planTopics(
+            event.messages,
+            jevAsker(fetchFn, config.apiKey, config.model),
+            resolveOptions(config),
+            reference,
+          ).catch(() => ({ cut: 0, turns: [], stateTokens: 0, stateStage: '' }));
+          const obsolete = event.messages.slice(0, plan.cut);
+          const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
+          const share = total > 0 ? obsolete.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
+          const ref = reference || latestRequest(event.messages, 1000);
+          const files = touchedFiles(obsolete);
+          planned = { reference: ref, cut: plan.cut, obsoleteShare: Math.round(share * 100) / 100, turns: plan.turns, files };
+          if (plan.cut > 0 && share >= config.minReductionRatio) {
+            $.ui.status('Claude is summarizing the finished topics…');
+            const summarized = await next({ ...event, messages: obsolete, instructions: summaryInstructions(ref, files) });
+            if (summarized.messages) {
+              const note = filesNote(files);
+              const messages = [
+                ...summarized.messages,
+                ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
+                ...event.messages.slice(plan.cut),
+              ];
+              const outcome = `${obsolete.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)`;
+              notify($, `${obsolete.length} messages on finished topics summarized, ${event.messages.length - plan.cut} kept as they are`);
+              await record({ outcome: 'summarized', note: outcome }, undefined, messages.length, planned);
+              return { messages };
+            }
           }
         }
-      }
-      // Nothing finished to summarize: only old tool results are shortened.
-      const { result, messages } = await compactSession(
-        event.messages,
-        { ...config, resultsOnly: true },
-        fetchFn,
-      );
-      if (reductionRatio(result) < config.minReductionRatio) {
-        const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
-        if (!isPrecompute) {
-          notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
+        // Nothing finished to summarize: only old tool results are shortened.
+        const { result, messages } = await compactSession(
+          event.messages,
+          { ...config, resultsOnly: true },
+          fetchFn,
+        );
+        if (reductionRatio(result) < config.minReductionRatio) {
+          const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
+          if (!isPrecompute) {
+            notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
+          }
+          await record({ outcome: 'fallback', note }, result, undefined, planned);
+          return next(event);
         }
-        await record({ outcome: 'fallback', note }, result, undefined, planned);
-        return next(event);
-      }
-      if (isPrecompute) {
-        if (isMain) precomputed = { input: event.messages, output: messages };
-        await record({ outcome: 'precomputed', note: summarize(result) }, result, messages.length);
+        if (isPrecompute) {
+          if (isMain) precomputed = { input: event.messages, output: messages };
+          await record({ outcome: 'precomputed', note: summarize(result) }, result, messages.length);
+          return { messages };
+        }
+        notify($, headline(result));
+        await record({ outcome: 'applied', note: summarize(result) }, result, messages.length, planned);
         return { messages };
+      } catch (error) {
+        const note = error instanceof Error ? error.message : String(error);
+        if (!isPrecompute) notify($, `built-in summary used: ${note}`);
+        await record({ outcome: 'error', note });
+        return next(event);
+      } finally {
+        if (!isPrecompute) $.ui.status(undefined);
       }
-      notify($, headline(result));
-      await record({ outcome: 'applied', note: summarize(result) }, result, messages.length, planned);
-      return { messages };
-    } catch (error) {
-      const note = error instanceof Error ? error.message : String(error);
-      if (!isPrecompute) notify($, `built-in summary used: ${note}`);
-      await record({ outcome: 'error', note });
-      return next(event);
-    } finally {
-      if (!isPrecompute) $.ui.status(undefined);
-    }
+    })();
+    if (followUp && outcome.messages) void $.prompt.submit({ text: followUp });
+    return outcome;
   }).catch(($, event, next) => {
     // A hook that threw or overran its budget: the built-in summary takes over.
     $.ui.status(undefined);
