@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_OPTIONS } from '../src/compact.js';
-import { planTopics, summaryInstructions, touchedFiles } from '../src/plan.js';
+import { planTopics, summaryInstructions, touchedFiles, olderPartCut } from '../src/plan.js';
 import type {
   CompactionState,
   JevAsker,
@@ -147,5 +147,17 @@ describe('summaryInstructions', () => {
     const shown = written.slice(0, 50).join(', ');
     expect(text.endsWith(`Files written: ${shown}, +3 more.`)).toBe(true);
     expect(text).not.toContain('f50.ts');
+  });
+});
+
+describe('olderPartCut', () => {
+  const m = (role: 'user' | 'assistant', n: number) => ({ role, text: 'x'.repeat(n), toolUses: [] });
+  it('cuts before the first assistant message past half the text', () => {
+    const msgs = [m('user', 10), m('assistant', 40), m('user', 10), m('assistant', 30), m('user', 5), m('assistant', 5)];
+    expect(olderPartCut(msgs, 0.5, 0)).toBe(3);
+  });
+  it('returns 0 when the cut would reach the recent messages', () => {
+    const msgs = [m('user', 10), m('assistant', 40), m('user', 10), m('assistant', 30)];
+    expect(olderPartCut(msgs, 0.5, 2)).toBe(0);
   });
 });

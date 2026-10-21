@@ -121,3 +121,28 @@ export function summaryInstructions(reference: string, files: TouchedFiles): str
   }
   return parts.join(' ');
 }
+
+/**
+ * Where the older part of a conversation with no finished topic ends: the
+ * first assistant message after `share` of the text, so no tool call is split
+ * from its result. 0 when that point falls inside the newest
+ * `preserveRecent` messages or no such message exists.
+ */
+export function olderPartCut(
+  messages: readonly Message[],
+  share = 0.5,
+  preserveRecent = 6,
+  charsOf: (message: Message) => number = (m) => m.text.length,
+): number {
+  const sizes = messages.map(charsOf);
+  const total = sizes.reduce((sum, n) => sum + n, 0);
+  const limit = messages.length - preserveRecent;
+  let seen = 0;
+  for (let i = 0; i < limit; i++) {
+    if (i > 0 && seen >= total * share && messages[i]!.role === 'assistant' && messages[i - 1]!.role === 'user') {
+      return i;
+    }
+    seen += sizes[i]!;
+  }
+  return 0;
+}

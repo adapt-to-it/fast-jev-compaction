@@ -30,8 +30,10 @@ built-in compaction summary with the original messages.
 3. After the summary, one line per file those turns used:
    `<path> <name> "write|read|mentioned"`, so the model can re-read them.
 4. With no finished topic, only old tool results are shortened; every call
-   and every text stays. Below `minReductionRatio` the built-in summary of
-   the whole conversation runs.
+   and every text stays. When that cuts less than `minReductionRatio`, the
+   built-in summarizer runs over the older half of the text only (cut before
+   an assistant message, never inside the newest `preserveRecentMessages`).
+5. After a manual `/compact <text>`, the text is sent as the next prompt.
 
 The library steps below still describe `compact()` as an npm package.
 

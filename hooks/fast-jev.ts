@@ -9,7 +9,7 @@ import type {
 } from 'claude-code';
 
 import { compact, messageChars, reductionRatio, resolveOptions } from '../src/compact.js';
-import { planTopics, summaryInstructions, touchedFiles, type TouchedFiles } from '../src/plan.js';
+import { olderPartCut, planTopics, summaryInstructions, touchedFiles, type TouchedFiles } from '../src/plan.js';
 import { latestRequest } from '../src/state.js';
 import { compactionLog, logPath, type CompactionLog } from './log.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
@@ -348,8 +348,33 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const response = await $.http.fetch(url, init);
           return { status: response.status, ok: response.ok, text: response.text };
         };
-        // Finished topics go to the built-in summarizer, alone; the rest stays as it is.
         let planned: Partial<CompactionLog> | undefined;
+        /** The built-in summarizer over `messages[0..cut)` alone; the rest stays as it is. */
+        const summarizeOlder = async (cut: number, what: string, extra: Partial<CompactionLog> = {}) => {
+          const older = event.messages.slice(0, cut);
+          const ref = event.instructions?.trim() || latestRequest(event.messages, 1000);
+          const files = touchedFiles(older);
+          const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
+          const share = total > 0 ? older.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
+          $.ui.status(`Claude is summarizing the messages ${what}…`);
+          const summarized = await next({ ...event, messages: older, instructions: summaryInstructions(ref, files) });
+          if (!summarized.messages) return undefined;
+          const note = filesNote(files);
+          const messages = [
+            ...summarized.messages,
+            ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
+            ...event.messages.slice(cut),
+          ];
+          notify($, `${older.length} messages ${what} summarized, ${event.messages.length - cut} kept as they are`);
+          await record(
+            { outcome: 'summarized', note: `${what}: ${older.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)` },
+            undefined,
+            messages.length,
+            { ...extra, reference: ref, cut, obsoleteShare: Math.round(share * 100) / 100, files },
+          );
+          return { messages };
+        };
+        // Finished topics go to the built-in summarizer, alone; the rest stays as it is.
         if (!isPrecompute && config.pruneTopics !== false && config.apiKey) {
           const reference = event.instructions?.trim() ?? '';
           // A failed plan only means nothing is summarized: the results path still runs.
@@ -366,20 +391,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const files = touchedFiles(obsolete);
           planned = { reference: ref, cut: plan.cut, obsoleteShare: Math.round(share * 100) / 100, turns: plan.turns, files };
           if (plan.cut > 0 && share >= config.minReductionRatio) {
-            $.ui.status('Claude is summarizing the finished topics…');
-            const summarized = await next({ ...event, messages: obsolete, instructions: summaryInstructions(ref, files) });
-            if (summarized.messages) {
-              const note = filesNote(files);
-              const messages = [
-                ...summarized.messages,
-                ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
-                ...event.messages.slice(plan.cut),
-              ];
-              const outcome = `${obsolete.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)`;
-              notify($, `${obsolete.length} messages on finished topics summarized, ${event.messages.length - plan.cut} kept as they are`);
-              await record({ outcome: 'summarized', note: outcome }, undefined, messages.length, planned);
-              return { messages };
-            }
+            const done = await summarizeOlder(plan.cut, 'on finished topics', planned);
+            if (done) return done;
           }
         }
         // Nothing finished to summarize: only old tool results are shortened.
@@ -392,6 +405,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
           if (!isPrecompute) {
             notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
+          }
+          // No finished topic and little to shorten: only the older half is summarized.
+          const cut = isPrecompute
+            ? 0
+            : olderPartCut(event.messages, 0.5, resolveOptions(config).preserveRecentMessages, messageChars);
+          if (cut > 0) {
+            const done = await summarizeOlder(cut, 'in the older half', planned);
+            if (done) return done;
           }
           await record({ outcome: 'fallback', note }, result, undefined, planned);
           return next(event);
