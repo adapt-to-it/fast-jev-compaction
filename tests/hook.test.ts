@@ -9,6 +9,7 @@ import {
   resolveHookConfig,
   summarize,
   toSessionMessages,
+  renderTranscript,
 } from '../hooks/fast-jev.ts';
 import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
 
@@ -61,6 +62,7 @@ describe('hook config', () => {
       minReductionRatio: 0.25,
       smallContextChars: 100_000,
       summarizeShare: 0.75,
+      summaryModel: 'haiku',
       model: 'jev-1.13.0',
       resumeAfterCompact: true,
       decisionLog: true,
@@ -77,6 +79,7 @@ describe('hook config', () => {
       minReductionRatio: 0.25,
       smallContextChars: 100_000,
       summarizeShare: 0.75,
+      summaryModel: 'haiku',
       resumeAfterCompact: false,
       decisionLog: false,
       logDir: '/tmp/l',
@@ -274,5 +277,20 @@ describe('shortened results for the summarizer', () => {
     const input = transcript();
     const { messages } = await compactSession(input, config, jevFetch(() => 0.1));
     expect(messages).toHaveLength(input.length);
+  });
+});
+
+describe('renderTranscript', () => {
+  it('writes texts, calls and results in order and keeps the newest text under the limit', () => {
+    const messages = [
+      { role: 'user', text: 'Fix a.ts', toolUses: [] },
+      { role: 'assistant', text: 'Reading.', toolUses: [{ tool_use_id: 't1', tool: 'Read', input: { file_path: '/r/a.ts' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: 'x'.repeat(5000), isError: false }] },
+    ] as never;
+    const text = renderTranscript(messages);
+    expect(text).toContain('[0] USER:\nFix a.ts');
+    expect(text).toContain('→ Read {"file_path":"/r/a.ts"}');
+    expect(text).toContain('[…1000 chars cut]');
+    expect(renderTranscript(messages, 50).startsWith('[…earlier part cut]')).toBe(true);
   });
 });

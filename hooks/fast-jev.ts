@@ -27,10 +27,49 @@ const HOOK_DEFAULTS = {
   minReductionRatio: 0.25,
   smallContextChars: 100_000,
   summarizeShare: 0.75,
+  summaryModel: 'haiku',
   model: DEFAULT_MODEL,
   resumeAfterCompact: true,
   decisionLog: true,
 };
+
+const SUMMARY_SYSTEM =
+  'You summarize the earlier part of a coding session between a user and an AI assistant, so the assistant can continue the work with only your summary and the newer messages. ' +
+  'Write plain text with these sections: Requests (what the user asked, in order, with their exact wording when it sets a rule), ' +
+  'Decisions and constraints, Work done (files, commands, results, commits), Errors and fixes, Open points. ' +
+  'Keep names, paths, identifiers, numbers and versions exact. Do not invent anything. Do not address the user.';
+
+/** Caps the transcript a summary model reads; the newest characters stay. */
+const TRANSCRIPT_LIMIT = 600_000;
+/** Caps each tool input and result inside that transcript. */
+const PART_LIMIT = 4_000;
+
+const clip = (text: string, limit: number) =>
+  text.length <= limit ? text : `${text.slice(0, limit)} […${text.length - limit} chars cut]`;
+
+/** The messages as plain text for a summary model: texts, tool calls and their results. */
+export function renderTranscript(messages: readonly SessionMessage[], limit = TRANSCRIPT_LIMIT): string {
+  const lines: string[] = [];
+  messages.forEach((message, i) => {
+    const parts = [`[${i}] ${message.role.toUpperCase()}:`];
+    if (message.text) parts.push(message.text);
+    for (const use of message.toolUses) {
+      let input: string;
+      try {
+        input = JSON.stringify(use.input);
+      } catch {
+        input = '{}';
+      }
+      parts.push(`→ ${use.tool} ${clip(input, PART_LIMIT)}`);
+    }
+    for (const result of message.toolResults ?? []) {
+      parts.push(`← ${result.isError ? 'error ' : ''}${clip(result.text, PART_LIMIT)}`);
+    }
+    lines.push(parts.join('\n'));
+  });
+  const text = lines.join('\n\n');
+  return text.length <= limit ? text : `[…earlier part cut]\n${text.slice(text.length - limit)}`;
+}
 
 /** The prompt submitted after an automatic compaction, so the work goes on unattended. */
 export const RESUME_PROMPT =
@@ -59,6 +98,8 @@ export type HookConfig = CompactOptions & {
   smallContextChars: number;
   /** Share of the text the built-in summarizer gets when no topic is finished. */
   summarizeShare: number;
+  /** The model that writes summaries (`haiku`, `sonnet`, a full id); empty: the built-in compact. */
+  summaryModel: string;
   model: string;
   resumeAfterCompact: boolean;
   /** Writes one JSON record per compaction under `logDir`. */
@@ -103,6 +144,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     ),
     smallContextChars: optionNumber(options, 'smallContextChars', HOOK_DEFAULTS.smallContextChars),
     summarizeShare: optionNumber(options, 'summarizeShare', HOOK_DEFAULTS.summarizeShare),
+    summaryModel: optionString(options, 'summaryModel') ?? HOOK_DEFAULTS.summaryModel,
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
     resumeAfterCompact:
       typeof options['resumeAfterCompact'] === 'boolean'
@@ -373,8 +415,33 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const files = touchedFiles(older);
           const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
           const share = total > 0 ? older.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
-          $.ui.status(`Claude is summarizing the messages ${what}…`);
-          const summarized = await next({ ...event, messages: shortened as typeof older, instructions: summaryInstructions(ref, files) });
+          const started = Date.now();
+          const instructions = summaryInstructions(ref, files);
+          let summarized: { messages?: readonly SessionMessage[] } | undefined;
+          let model = 'built-in';
+          if (config.summaryModel) {
+            $.ui.status(`${config.summaryModel} is summarizing the messages ${what}…`);
+            const reply = await $.model
+              .complete({
+                model: config.summaryModel,
+                system: SUMMARY_SYSTEM,
+                prompt: `${instructions}\n\n<conversation>\n${renderTranscript(shortened as readonly SessionMessage[])}\n</conversation>`,
+                maxTokens: 8000,
+                timeoutMs: 120_000,
+              })
+              .catch(() => undefined);
+            if (reply?.isAnswered && reply.text.trim()) {
+              model = config.summaryModel;
+              const text =
+                'This session is being continued from an earlier conversation. The earlier part is summarized below; the newer messages follow verbatim.\n\n' +
+                reply.text.trim();
+              summarized = { messages: [{ role: 'user', text, toolUses: [] } as unknown as SessionMessage] };
+            }
+          }
+          if (!summarized) {
+            $.ui.status(`Claude is summarizing the messages ${what}…`);
+            summarized = await next({ ...event, messages: shortened as typeof older, instructions });
+          }
           if (!summarized.messages) return undefined;
           const note = filesNote(files);
           const messages = [
@@ -382,7 +449,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
             ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
             ...event.messages.slice(cut),
           ];
-          notify($, `${older.length} messages ${what} summarized, ${event.messages.length - cut} kept as they are`);
+          notify($, `${older.length} messages ${what} summarized by ${model} in ${Math.round((Date.now() - started) / 1000)} s, ${event.messages.length - cut} kept as they are`);
           await record(
             { outcome: 'summarized', note: `${what}: ${older.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)` },
             undefined,
@@ -394,6 +461,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
               obsoleteShare: Math.round(share * 100) / 100,
               files,
               summarizedChars: shortened.reduce((sum, m) => sum + messageChars(m), 0),
+              summaryModel: model,
+              summaryMs: Date.now() - started,
             },
           );
           return { messages };

@@ -28,6 +28,9 @@ export type CompactionLog = {
   obsoleteShare?: number;
   /** Characters the built-in summarizer read, after the results were shortened. */
   summarizedChars?: number;
+  /** Who wrote the summary: a model alias, or `built-in`. */
+  summaryModel?: string;
+  summaryMs?: number;
   files?: TouchedFiles;
   decisions: Array<{
     id: string;
