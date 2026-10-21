@@ -35,6 +35,8 @@ built-in compaction summary with the original messages.
    `minReductionRatio`, the built-in summarizer runs over the older
    `summarizeShare` of the text only (cut before an assistant message, never
    inside the newest `preserveRecentMessages`).
+   Every summary reads the part to summarize with its old tool results
+   already shortened, so the built-in summarizer has less to read.
 5. After a manual `/compact <text>`, the text is sent as the next prompt.
 
 The library steps below still describe `compact()` as an npm package.

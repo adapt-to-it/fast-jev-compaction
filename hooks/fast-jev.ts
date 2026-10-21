@@ -357,15 +357,24 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { status: response.status, ok: response.ok, text: response.text };
         };
         let planned: Partial<CompactionLog> | undefined;
+        /** Old tool results shortened, every call and text kept; computed once. */
+        let shortening: ReturnType<typeof compactSession> | undefined;
+        const shorten = () =>
+          (shortening ??= compactSession(event.messages, { ...config, resultsOnly: true }, fetchFn));
         /** The built-in summarizer over `messages[0..cut)` alone; the rest stays as it is. */
         const summarizeOlder = async (cut: number, what: string, extra: Partial<CompactionLog> = {}) => {
           const older = event.messages.slice(0, cut);
+          // The summarizer reads the shortened results: less to read, same calls and texts.
+          const shortened = await shorten().then(
+            (s) => (s.messages.length === event.messages.length ? s.messages.slice(0, cut) : older),
+            () => older,
+          );
           const ref = event.instructions?.trim() || latestRequest(event.messages, 1000);
           const files = touchedFiles(older);
           const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
           const share = total > 0 ? older.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
           $.ui.status(`Claude is summarizing the messages ${what}…`);
-          const summarized = await next({ ...event, messages: older, instructions: summaryInstructions(ref, files) });
+          const summarized = await next({ ...event, messages: shortened as typeof older, instructions: summaryInstructions(ref, files) });
           if (!summarized.messages) return undefined;
           const note = filesNote(files);
           const messages = [
@@ -378,7 +387,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
             { outcome: 'summarized', note: `${what}: ${older.length} of ${event.messages.length} messages summarized (${percent(share)} of the text)` },
             undefined,
             messages.length,
-            { ...extra, reference: ref, cut, obsoleteShare: Math.round(share * 100) / 100, files },
+            {
+              ...extra,
+              reference: ref,
+              cut,
+              obsoleteShare: Math.round(share * 100) / 100,
+              files,
+              summarizedChars: shortened.reduce((sum, m) => sum + messageChars(m), 0),
+            },
           );
           return { messages };
         };
@@ -404,11 +420,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           }
         }
         // Nothing finished to summarize: only old tool results are shortened.
-        const { result, messages } = await compactSession(
-          event.messages,
-          { ...config, resultsOnly: true },
-          fetchFn,
-        );
+        const { result, messages } = await shorten();
         // A small context keeps its shortened results: a summary there costs time and saves little.
         const small = result.stats.charsBefore <= config.smallContextChars && reductionRatio(result) > 0;
         if (!small && reductionRatio(result) < config.minReductionRatio) {

@@ -267,3 +267,12 @@ describe('filesNote', () => {
     expect(filesNote({ written: [], read: [], mentioned: [] })).toBe('');
   });
 });
+
+describe('shortened results for the summarizer', () => {
+  it('keep one message per input message, so a cut index still applies', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k', resultsOnly: true };
+    const input = transcript();
+    const { messages } = await compactSession(input, config, jevFetch(() => 0.1));
+    expect(messages).toHaveLength(input.length);
+  });
+});

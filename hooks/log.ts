@@ -26,6 +26,8 @@ export type CompactionLog = {
   reference?: string;
   cut?: number;
   obsoleteShare?: number;
+  /** Characters the built-in summarizer read, after the results were shortened. */
+  summarizedChars?: number;
   files?: TouchedFiles;
   decisions: Array<{
     id: string;
