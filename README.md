@@ -18,6 +18,23 @@ The repository is both an npm package (`src/`) and a Claude Code plugin
 (`hooks/`, `.claude-plugin/`) that uses the package to replace Claude Code's
 built-in compaction summary with the original messages.
 
+## How the plugin compacts (0.7)
+
+1. Jev reads the conversation split into turns (a user request and the
+   replies up to the next one) and answers one Choice, `topic_start`: which
+   turn the current work starts from. The reference is the text after
+   `/compact` (write the next prompt there), or else the latest requests.
+2. The turns before that point, when they hold at least `minReductionRatio`
+   of the text, go to Claude Code's own summarizer alone (`next(e)` with
+   only those messages). Everything after them stays as it is.
+3. After the summary, one line per file those turns used:
+   `<path> <name> "write|read|mentioned"`, so the model can re-read them.
+4. With no finished topic, only old tool results are shortened; every call
+   and every text stays. Below `minReductionRatio` the built-in summary of
+   the whole conversation runs.
+
+The library steps below still describe `compact()` as an npm package.
+
 ## How it works
 
 1. Every `tool_use` is paired with its `tool_result` by `tool_use_id`. Calls in
