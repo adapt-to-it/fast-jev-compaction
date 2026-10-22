@@ -525,7 +525,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         if (!isPrecompute) $.ui.status(undefined);
       }
     })();
-    if (followUp && outcome.messages) void $.prompt.submit({ text: followUp });
+    if (followUp && outcome.messages) void $.prompt.submit({ text: followUp, asUser: true });
     return outcome;
   }).catch(($, event, next) => {
     // A hook that threw or overran its budget: the built-in summary takes over.
