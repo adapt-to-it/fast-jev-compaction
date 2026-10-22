@@ -494,9 +494,6 @@ export const register: Register = (on: On, options: PluginOptions) => {
         const small = result.stats.charsBefore <= config.smallContextChars && reductionRatio(result) > 0;
         if (!small && reductionRatio(result) < config.minReductionRatio) {
           const note = `below ${percent(config.minReductionRatio)} minimum: ${summarize(result)}`;
-          if (!isPrecompute) {
-            notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
-          }
           // No finished topic and little to shorten: the older part is summarized, the newest stays.
           const cut = isPrecompute
             ? 0
@@ -504,6 +501,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
           if (cut > 0) {
             const done = await summarizeOlder(cut, 'in the older part', planned);
             if (done) return done;
+          }
+          if (!isPrecompute) {
+            notify($, `built-in summary used: Jev would cut only ${percent(reductionRatio(result))} of the context`);
           }
           await record({ outcome: 'fallback', note }, result, undefined, planned);
           return next(event);
