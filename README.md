@@ -1,239 +1,179 @@
-# fast-jev-compaction
+# fast-jev-compaction (adapt-to-it fork)
 
-Claude Code plugin that replaces the compaction summary with Jev decisions:
-every tool call and result is scored in one fast request, stale ones are
-dropped or truncated, everything kept stays verbatim. Also usable as an npm
-library.
+A Claude Code plugin that makes compaction faster and keeps the recent
+work verbatim. It uses Jev, TypeSafe's System One model, to find which part
+of a session is finished, and a small model (Haiku by default) to summarize
+only that part.
 
-## What and why
+## Credits
 
-Most context compaction asks an LLM to summarize old turns. A summary is
-lossy: a file path, exact error, constraint, or command can disappear even when
-it matters later. This library never rewrites anything. It only deletes tool
-calls and tool results Jev says are no longer needed, and it asks Jev while
-showing it the whole conversation. User and assistant text stays verbatim and
-in order.
+This project started as a fork of
+[tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+by Tamara Tran. Her version replaced the compaction summary with Jev
+decisions: it scored every tool call and result, dropped the stale ones and
+kept everything else verbatim. The Jev client, the state fitting, the
+token estimates, the tool-call scoring library in `src/` and the demo app
+come from her work. Thank you, Tamara.
 
-The repository is both an npm package (`src/`) and a Claude Code plugin
-(`hooks/`, `.claude-plugin/`) that uses the package to replace Claude Code's
-built-in compaction summary with the original messages.
+This fork has since taken a different direction. It no longer deletes tool
+calls or turns from the plugin's output. It summarizes old, finished work
+and keeps the rest as it is. The two projects now solve the problem in
+different ways. Report issues with this fork here, not upstream.
 
-## How the plugin compacts (0.7)
+## How a compaction works
 
-1. Jev reads the conversation split into turns (a user request and the
-   replies up to the next one) and answers one Choice, `topic_start`: which
-   turn the current work starts from. The reference is the text after
-   `/compact` (write the next prompt there), or else the latest requests.
-2. The turns before that point, when they hold at least `minReductionRatio`
-   of the text, go to Claude Code's own summarizer alone (`next(e)` with
-   only those messages). Everything after them stays as it is.
-3. After the summary, one line per file those turns used:
-   `<path> <name> "write|read|mentioned"`, so the model can re-read them.
-4. With no finished topic, only old tool results are shortened; every call
-   and every text stays. Up to `smallContextChars` characters this result
-   stands, however little it cuts. Above that, when it cuts less than
-   `minReductionRatio`, the built-in summarizer runs over the older
-   `summarizeShare` of the text only (cut before an assistant message, never
-   inside the newest `preserveRecentMessages`).
-   Every summary reads the part to summarize with its old tool results
-   already shortened. `summaryModel` (default `haiku`) writes the summary
-   through the session's own credentials; when it fails, or the option is
-   empty, the built-in compact writes it with the session model.
-5. After a manual `/compact <text>`, the text is sent as the next prompt.
+On every `/compact` and every automatic compaction, the plugin runs these
+steps in order and stops at the first one that applies:
 
-The library steps below still describe `compact()` as an npm package.
+1. **Finished topics.** The plugin splits the session into turns: a user
+   request and the replies up to the next request. Jev answers one Choice,
+   `topic_start`: from which turn the current work starts. The reference is
+   the text you write after `/compact`, or else your latest requests. When
+   the turns before that point hold at least `minReductionRatio` of the
+   text, the plugin summarizes them and keeps the later turns verbatim.
+2. **Shortened tool results.** With no finished topic, the plugin shortens
+   old tool results and keeps every call and every text. When this cuts at
+   least `minReductionRatio` of the text, the result stands. Up to
+   `smallContextChars` characters it stands however little it cuts, because
+   a summary of a small context costs more time than it saves.
+3. **Older part.** When shortening cuts too little, the plugin summarizes
+   the oldest `summarizeShare` of the text. The cut falls before an
+   assistant message, so no tool call is split from its result, and never
+   inside the newest `preserveRecentMessages` messages.
+4. **Built-in compact.** When none of the steps above applies, or a step
+   fails, Claude Code's own compact summarizes the whole session.
 
-## How it works
+Every summary works the same way:
 
-1. Every `tool_use` is paired with its `tool_result` by `tool_use_id`. Calls in
-   the first message or in the newest `preserveRecentMessages` messages are
-   pinned and never touched.
-2. The **state** sent to Jev is the whole conversation so far, oldest first,
-   with every tool result replaced by a short note (`ok, 4213 chars (omitted)`).
-   Tool inputs are included, texts are included, nothing is summarized.
-3. The state is fitted into `maxStateTokens` (25k by default) in stages, each
-   applied only if the previous one was not enough: tool inputs truncated to
-   1000, then 200, then 60 characters; long texts abridged to head + tail,
-   oldest non-pinned messages first; old non-pinned messages collapsed to a
-   `[… N chars omitted …]` note; old tool calls reduced to one line each
-   (`t12 Read file_path=src/a.ts → ok 480ch`); old call-less messages left
-   out; runs of old call-only messages folded into one entry. If it still
-   does not fit, compaction throws. Tokens are estimated without a tokenizer (a
-   word per six letters, half a token per digit, ~one per other symbol),
-   calibrated to land a little above the counts Jev reports.
-4. For every non-pinned call Jev gets two `noul` questions: should the **call**
-   stay (knowing it was made, with its input, still matters), and should the
-   **result** stay verbatim (its contents are still needed and re-running the
-   tool would not do). A call to a tool outside `readOnlyTools` (an edit, a
-   write, a shell command) gets a third question: does the current task
-   depend on exactly what the call **changed**. Re-reading a file shows its
-   current content, not what an edit did, so the call input is the only record
-   of the change. The question is separate because Jev answers one condition
-   per `noul` more reliably than a compound one.
-5. Questions are split into as many requests as needed so state plus questions
-   stays under `maxRequestTokens` (30k by default, under Jev's 32k request
-   limit). The same full state is resent with every request; requests run
-   concurrently and their answers are merged.
-6. Decisions per call, against `keepThreshold`:
-   - `keepResult ≥ threshold` → keep call and result;
-   - else `keepCall ≥ threshold` or `keepChange ≥ threshold` → keep the
-     call, truncate the result to its
-     first `truncateHeadChars` characters plus a one-line note;
-   - else → remove the call together with its result.
-7. Old topics: the history is split into turns (a user request and the
-   replies up to the next one). In the same round Jev answers a Choice,
-   `topic_start`, on which turn the current work started from, and for each
-   older turn outside the pinned messages a `noul`, `lasting_<turn>`, on
-   whether it holds a constraint, preference or decision that still applies.
-   A turn is removed when the probability that the current topic started
-   after it reaches `topicThreshold` and its `lasting` score stays under
-   `lastingThreshold`. Adjacent removed turns become one line quoting their
-   requests. Removing a turn also removes its reasoning and reminders from
-   the context, which the mod cannot touch otherwise.
-8. The message list is rebuilt: a message that loses all its content is
-   removed, untouched messages are returned as the same objects, and no result
-   is ever left without its call.
+- The summarizer reads the part to summarize with its old tool results
+  already shortened, so it has less to read.
+- `summaryModel` (default `haiku`) writes the summary through the session's
+  own credentials, with low effort and a 16,000-token reply cap. It writes
+  in the language the user writes in. A reply that fails, or that reaches
+  the cap and may be cut short, is discarded, and the built-in compact
+  writes the summary instead.
+- After the summary, the plugin adds one line per file the summarized part
+  used, `<path> <name> "write|read|mentioned"`, so the model can re-read it.
 
-Jev failures, malformed answers, a missing key, or a history that cannot be
-fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
+The text after a manual `/compact` is also the next prompt. The plugin
+submits it, as your own words, once the compaction is done. After an
+automatic compaction, the plugin submits a short resume prompt instead,
+unless `resumeAfterCompact` is off.
 
-## Install and usage
+### Typical timings
 
-```sh
-npm install fast-jev-compaction
-export TYPESAFE_API_KEY=...
-```
+Measured on 45 compactions of real sessions, 22–24 October 2026, with
+contexts of about 370,000 tokens:
 
-```ts
-import { compactMessages, reductionRatio, type Message } from 'fast-jev-compaction';
-
-const transcript: Message[] = [
-  { role: 'user', text: 'Fix the failing test. Never edit src/generated.', toolUses: [] },
-  {
-    role: 'assistant',
-    text: '',
-    toolUses: [{ tool_use_id: 'toolu_1', tool: 'Read', input: { file_path: 'src/a.ts' } }],
-  },
-  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'toolu_1', text: '…file…' }] },
-  // …
-];
-
-const result = await compactMessages(transcript, { preserveRecentMessages: 4 });
-console.log(result.messages, result.decisions, result.stats);
-if (reductionRatio(result) < 0.25) {
-  // not worth it: keep the original transcript, or summarize instead
-}
-```
-
-`Message` is a subset of Claude Code's `SessionMessage`, so a session transcript
-can be passed in as is.
-
-To bring your own transport, implement `JevAsker` (one `ask(state, questions)`
-method) and call `compact(messages, asker, options)`; `buildJevRequest` and
-`parseJevResponse` give you the HTTP request body and response validation.
-The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
-`decideCall`, `applyDecisions`) are exported too.
-
-`apiKey` defaults to `process.env.TYPESAFE_API_KEY`. Never commit the key or
-put it in a source file.
-
-## Options
-
-| Option | Default | Description |
+| Step | Compactions | Time |
 | --- | --- | --- |
-| `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key (`compactMessages`/`JevClient`) |
-| `model` | `jev-1.13.0` | Jev model name |
-| `baseUrl` | `https://api.typesafe.ai/v1/systemone` | System One endpoint |
-| `fetch` | native `fetch` | Injectable fetch implementation for tests |
-| `goal` | last 3 user prompts | Ongoing task description included in the state |
-| `keepThreshold` | `0.5` | Minimum keep probability for a call or result to stay |
-| `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
-| `maxStateTokens` | `25000` | Estimated token ceiling for the state |
-| `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
-| `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
-| `pruneTopics` | `true` | Removes old turns on a finished topic |
-| `topicThreshold` | `0.8` | Minimum probability that the current topic started after a turn |
-| `lastingThreshold` | `0.3` | A turn whose `lasting` score reaches this stays |
-| `readOnlyTools` | `DEFAULT_READ_ONLY_TOOLS` | Tools that never change anything and skip the change question (Claude Code's read, search and fetch tools, plus `AskUserQuestion`, `Skill`, `SendMessage` and the other tools that change no file). A `Bash` call also skips it when every command in it only reads (`ls`, `cat`, `grep`, `git status`, `sed -n`, ...) and nothing is redirected to a file |
+| Shortened tool results | 21 | about 1 s |
+| Finished topics, summarized by Haiku | 17 | 12–20 s |
+| Older part, summarized by Haiku | 7 | 12–47 s |
 
-`result.stats` reports message and character counts before and after, the
-per-reason decision counts, the state size in estimated tokens, which fitting
-stage was needed, and the number of requests.
+The built-in compact took 36–78 s on the same sessions before.
 
-## Limitations
+## Install
 
-- Only tool calls and results are candidates; text messages are never removed
-  or shortened in the output (they are only abridged in the state Jev sees).
-- Token sizes are estimates from character counts, not a tokenizer.
-- Calibration is at the request level; a probability is not a proof that a
-  result is safe to delete. The assistant can always re-run the tool.
-- The full state is repeated with every request, so a history near the state
-  ceiling costs one request per handful of questions.
-
-## Claude Code plugin
-
-The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
-is a thin adapter that feeds `session.compact` transcripts through `src/` and
-falls back to Claude Code's built-in summary on errors or insufficient
-reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
-Claude Code 2.1.301 type reference.
-
-### Install in Claude Code
-
-Function hooks are an early-access Claude Code feature (2.1.301+), so the
-opt-in flag must be set wherever Claude Code runs, e.g. in `~/.claude/settings.json`:
+The plugin needs Claude Code with function hooks (2.1.301 or later). On
+builds where function hooks are behind a flag, set it in
+`~/.claude/settings.json`:
 
 ```json
-{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1", "TYPESAFE_API_KEY": "<your key>" } }
+{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
 ```
 
-Then add this repository as a plugin marketplace and install the plugin,
-either from the shell or as slash commands inside a session:
+Install from GitHub:
 
 ```sh
-claude plugin marketplace add tamaratran/fast-jev-compaction
+claude plugin marketplace add adapt-to-it/fast-jev-compaction
 claude plugin install fast-jev-compaction@fast-jev-compaction
 ```
 
-The install prompts for the plugin options (API key, thresholds, `truncateHeadChars`,
-…); leave them at their defaults to use `TYPESAFE_API_KEY` from the environment.
-Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
-auto-compaction) goes through Jev: the toast reads
-`fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
-replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails). Every compaction
-also writes a JSON record of its decisions to
-`~/.claude/fast-jev-compaction/logs/<session>/` unless the `decisionLog` option
-is off; see `hooks/README.md`.
+To work on the plugin, install it from a local checkout instead. Claude Code
+then reads the folder itself, and `/reload-plugins` applies a change without
+a restart:
 
-To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
-from the repository root. No publishing step is required; the marketplace is
-just the repo's `.claude-plugin/marketplace.json`.
+```sh
+claude plugin marketplace add ~/fast-jev-compaction
+claude plugin install fast-jev-compaction@fast-jev-compaction
+```
+
+### TypeSafe key
+
+Jev needs a TypeSafe API key. Store it in the plugin's secrets, without
+showing it on screen:
+
+```sh
+read -rs "k?TypeSafe key: " && printf '{"apiKey":"%s"}' "$k" | claude plugin configure fast-jev-compaction@fast-jev-compaction --values-stdin; unset k
+```
+
+Without the `apiKey` option, the plugin reads `TYPESAFE_API_KEY` from the
+environment, then from the `env` section of `~/.claude/settings.json`. The
+desktop app does not read `~/.zshrc`, so a key exported there does not reach
+it. Removing the marketplace deletes the plugin's saved options and secrets.
+
+## Options
+
+Set them with `claude plugin configure fast-jev-compaction@fast-jev-compaction`.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `apiKey` | unset | TypeSafe API key; unset reads `TYPESAFE_API_KEY` |
+| `model` | `jev-1.13.0` | Jev model |
+| `pruneTopics` | `true` | Asks Jev for finished topics (step 1) |
+| `topicThreshold` | `0.8` | Minimum probability that the current topic started after a turn |
+| `minReductionRatio` | `0.25` | Minimum share of the text a step must cut |
+| `smallContextChars` | `100000` | Up to this size, shortened results stand however little they cut |
+| `summarizeShare` | `0.75` | Share of the text summarized in step 3 |
+| `summaryModel` | `haiku` | Model that writes summaries; empty uses the built-in compact |
+| `preserveRecentMessages` | `6` | Newest messages never summarized or shortened |
+| `truncateHeadChars` | `300` | Characters kept from a shortened tool result |
+| `maxStateTokens` | `25000` | Estimated token budget for the state sent to Jev |
+| `maxRequestTokens` | `30000` | Estimated token budget for one Jev request |
+| `compactAtPercent` | `0` | Context percentage at which the plugin compacts at the end of a turn; 0 leaves the timing to Claude Code |
+| `resumeAfterCompact` | `true` | Submits a resume prompt after an automatic compaction |
+| `decisionLog` | `true` | Writes one JSON record per compaction |
+| `logDir` | unset | Log folder; unset is `~/.claude/fast-jev-compaction/logs` |
+
+`keepThreshold` and `lastingThreshold` still exist for the library. The
+plugin no longer uses them.
+
+## Decision log
+
+Every compaction writes a JSON record to
+`~/.claude/fast-jev-compaction/logs/<session>/<time>-<trigger>.json`. It
+holds the trigger, the outcome (`applied`, `summarized`, `fallback`,
+`error`), Jev's score for each turn, the cut point, the files of the
+summarized part, and for summaries the model, the time
+(`summaryMs`), the characters read (`summarizedChars`) and the output
+tokens (`summaryOutputTokens`). The plugin never writes its API key
+there, but the record holds request texts and tool inputs from the session:
+keep the folder private.
+
+## Library
+
+`src/` is still an npm-style TypeScript library. `compact()` and
+`compactMessages()` score tool calls and results with Jev and drop or
+shorten the stale ones, as in the upstream design. The plugin calls it with
+`resultsOnly: true`, which only shortens results. `planTopics()`,
+`olderPartCut()` and `touchedFiles()` in `src/plan.ts` hold the plugin's
+topic and cut logic.
 
 ## Development
 
 ```sh
 npm install
-npm run typecheck        # library + hook
+npm run typecheck
 npm test
-npm run build
-npm run validate:plugin  # claude plugin validate
-TYPESAFE_API_KEY="$(cat ~/.typesafe_key)" npm run demo
+claude plugin validate .
 ```
 
-The unit tests use a fake Jev and never contact TypeSafe. The demo is the live
-network check.
+The unit tests use a fake Jev and never contact TypeSafe.
+`npm run demo` runs a live request and needs `TYPESAFE_API_KEY`.
+`demo/JevDemo` is the upstream SwiftUI app that plays a scripted compaction
+for screen recordings.
 
-## Animated demo (macOS)
+## License
 
-`demo/JevDemo` is a small native SwiftUI app that plays a scripted, dramatized
-version of the compaction flow inside a Claude Code-style terminal: the tool
-calls of a canned transcript are scored, results and calls Jev lets go turn red
-and collapse away, and the rest stays verbatim. It never calls the API; it
-exists to be screen recorded.
-
-```sh
-demo/JevDemo/build.sh   # builds demo/JevDemo/build/JevDemo.app and launches it
-```
-
-Press space in the app to replay from the start.
+MIT, as upstream. See [LICENSE](LICENSE).
