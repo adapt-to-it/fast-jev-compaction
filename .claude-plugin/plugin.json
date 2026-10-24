@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "author": {
     "name": "adapt-to-it",
@@ -107,8 +107,8 @@
     "decisionLog": {
       "type": "boolean",
       "title": "Decision log",
-      "description": "Write one JSON record per compaction (trigger, outcome, every decision with its call input and Jev's probabilities) under the log directory.",
-      "default": true
+      "description": "Off by default. On: write one JSON record per compaction (trigger, outcome, Jev's scores, summary model and time) under the log directory. The records hold request texts and tool inputs from your sessions.",
+      "default": false
     },
     "logDir": {
       "type": "string",

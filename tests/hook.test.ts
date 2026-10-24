@@ -65,7 +65,7 @@ describe('hook config', () => {
       summaryModel: 'haiku',
       model: 'jev-1.13.0',
       resumeAfterCompact: true,
-      decisionLog: true,
+      decisionLog: false,
     });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no', resumeAfterCompact: false, decisionLog: false, logDir: '/tmp/l' }),

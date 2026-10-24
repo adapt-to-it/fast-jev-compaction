@@ -133,7 +133,7 @@ Set them with `claude plugin configure fast-jev-compaction@fast-jev-compaction`.
 | `maxRequestTokens` | `30000` | Estimated token budget for one Jev request |
 | `compactAtPercent` | `0` | Context percentage at which the plugin compacts at the end of a turn; 0 leaves the timing to Claude Code |
 | `resumeAfterCompact` | `true` | Submits a resume prompt after an automatic compaction |
-| `decisionLog` | `true` | Writes one JSON record per compaction |
+| `decisionLog` | `false` | Writes one JSON record per compaction |
 | `logDir` | unset | Log folder; unset is `~/.claude/fast-jev-compaction/logs` |
 
 `keepThreshold` and `lastingThreshold` still exist for the library. The
@@ -141,15 +141,21 @@ plugin no longer uses them.
 
 ## Decision log
 
-Every compaction writes a JSON record to
+With `decisionLog` on, every compaction writes a JSON record to
 `~/.claude/fast-jev-compaction/logs/<session>/<time>-<trigger>.json`. It
 holds the trigger, the outcome (`applied`, `summarized`, `fallback`,
 `error`), Jev's score for each turn, the cut point, the files of the
 summarized part, and for summaries the model, the time
 (`summaryMs`), the characters read (`summarizedChars`) and the output
-tokens (`summaryOutputTokens`). The plugin never writes its API key
-there, but the record holds request texts and tool inputs from the session:
-keep the folder private.
+tokens (`summaryOutputTokens`).
+
+The log is off by default because the records hold request texts and tool
+inputs from your sessions. The plugin never writes its API key there. If you
+turn the log on, keep the folder private:
+
+```sh
+printf '{"decisionLog":"true"}' | claude plugin configure fast-jev-compaction@fast-jev-compaction --values-stdin
+```
 
 ## Library
 

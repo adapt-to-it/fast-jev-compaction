@@ -30,7 +30,7 @@ const HOOK_DEFAULTS = {
   summaryModel: 'haiku',
   model: DEFAULT_MODEL,
   resumeAfterCompact: true,
-  decisionLog: true,
+  decisionLog: false,
 };
 
 const SUMMARY_SYSTEM =
