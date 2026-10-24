@@ -31,6 +31,8 @@ export type CompactionLog = {
   /** Who wrote the summary: a model alias, or `built-in`. */
   summaryModel?: string;
   summaryMs?: number;
+  /** Output tokens of the summary model's reply, thinking included. */
+  summaryOutputTokens?: number;
   files?: TouchedFiles;
   decisions: Array<{
     id: string;

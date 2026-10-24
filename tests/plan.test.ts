@@ -161,3 +161,11 @@ describe('olderPartCut', () => {
     expect(olderPartCut(msgs, 0.5, 2)).toBe(0);
   });
 });
+
+describe('touchedFiles mentions', () => {
+  it('keeps @paths and skips e-mail addresses, words and IP addresses', () => {
+    const text = 'See @src/a.ts and @"docs/my file.md", then @README.md. Mail noreply@anthropic.com, @today, @192.168.1.227';
+    const files = touchedFiles([{ role: 'user', text, toolUses: [] }]);
+    expect(files.mentioned).toEqual(['src/a.ts', 'docs/my file.md', 'README.md']);
+  });
+});

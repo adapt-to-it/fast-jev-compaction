@@ -37,7 +37,10 @@ const SUMMARY_SYSTEM =
   'You summarize the earlier part of a coding session between a user and an AI assistant, so the assistant can continue the work with only your summary and the newer messages. ' +
   'Write plain text with these sections: Requests (what the user asked, in order, with their exact wording when it sets a rule), ' +
   'Decisions and constraints, Work done (files, commands, results, commits), Errors and fixes, Open points. ' +
-  'Keep names, paths, identifiers, numbers and versions exact. Do not invent anything. Do not address the user.';
+  'Keep names, paths, identifiers, numbers and versions exact. Do not invent anything. Do not address the user. ' +
+  'Write the summary in the language the user writes in, and keep any rule they set about the language of replies.';
+/** The reply cap of a summary; a reply that reaches it was cut short and is not used. */
+const SUMMARY_MAX_TOKENS = 16_000;
 
 /** Caps the transcript a summary model reads; the newest characters stay. */
 const TRANSCRIPT_LIMIT = 600_000;
@@ -419,6 +422,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const instructions = summaryInstructions(ref, files);
           let summarized: { messages?: readonly SessionMessage[] } | undefined;
           let model = 'built-in';
+          let outputTokens: number | undefined;
           if (config.summaryModel) {
             $.ui.status(`${config.summaryModel} is summarizing the messages ${what}…`);
             const reply = await $.model
@@ -426,11 +430,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
                 model: config.summaryModel,
                 system: SUMMARY_SYSTEM,
                 prompt: `${instructions}\n\n<conversation>\n${renderTranscript(shortened as readonly SessionMessage[])}\n</conversation>`,
-                maxTokens: 8000,
+                maxTokens: SUMMARY_MAX_TOKENS,
+                effort: 'low',
                 timeoutMs: 120_000,
               })
               .catch(() => undefined);
-            if (reply?.isAnswered && reply.text.trim()) {
+            outputTokens = reply?.usage.output_tokens;
+            const cutShort = (outputTokens ?? 0) >= SUMMARY_MAX_TOKENS - 50;
+            if (reply?.isAnswered && reply.text.trim() && !cutShort) {
               model = config.summaryModel;
               const text =
                 'This session is being continued from an earlier conversation. The earlier part is summarized below; the newer messages follow verbatim.\n\n' +
@@ -463,6 +470,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               summarizedChars: shortened.reduce((sum, m) => sum + messageChars(m), 0),
               summaryModel: model,
               summaryMs: Date.now() - started,
+              summaryOutputTokens: outputTokens,
             },
           );
           return { messages };

@@ -24,8 +24,10 @@ export interface TopicPlan {
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 /** Input keys that name a file for any other tool. */
 const PATH_KEYS = ['file_path', 'path', 'notebook_path'] as const;
-/** `@"x y"` or `@x` (up to a space) in a user message. */
-const MENTION = /@"([^"]+)"|@(\S+)/g;
+/** `@"x y"` or `@x` in a user message, at the start of a word (so no e-mail address). */
+const MENTION = /(?:^|\s)@"([^"\n]+)"|(?:^|\s)@([\w./~-]+)/g;
+/** A mention that names a file: a path, or a name with an extension (not an IP address). */
+const FILE_LIKE = /\/|^[\w-][\w.-]*\.[A-Za-z][\w]{0,7}$/;
 /** Longest list of files shown per kind in the summary instructions. */
 const LIST_LIMIT = 50;
 
@@ -91,7 +93,10 @@ export function touchedFiles(messages: readonly Message[]): TouchedFiles {
       }
     }
     if (message.role === 'user') {
-      for (const match of message.text.matchAll(MENTION)) addPath(mentioned, match[1] ?? match[2]);
+      for (const match of message.text.matchAll(MENTION)) {
+        const path = (match[1] ?? match[2] ?? '').replace(/[.,;:]+$/, '');
+        if (FILE_LIKE.test(path)) addPath(mentioned, path);
+      }
     }
   }
   // A file sits in the first list it fits: written, then read, then mentioned.
