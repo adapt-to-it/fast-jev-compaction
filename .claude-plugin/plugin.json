@@ -3,8 +3,8 @@
   "version": "0.8.3",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "author": {
-    "name": "tamaratran",
-    "url": "https://github.com/tamaratran"
+    "name": "adapt-to-it",
+    "url": "https://github.com/adapt-to-it"
   },
   "license": "MIT",
   "userConfig": {
