@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
   "author": {
     "name": "adapt-to-it",
@@ -103,6 +103,12 @@
       "title": "Resume after compaction",
       "description": "After an automatic compaction, submit a prompt so the model continues the task without waiting for the user.",
       "default": true
+    },
+    "rulesFiles": {
+      "type": "string",
+      "title": "Rule files",
+      "description": "Comma-separated files the project rules live in, relative to the project root (CLAUDE.md, docs/decisions/*.md). After a summary the plugin adds an index of their sections and, in full, the introductions and the 1-2 sections Jev picks for the work in progress. Empty: off.",
+      "default": ""
     },
     "decisionLog": {
       "type": "boolean",

@@ -10,7 +10,8 @@ import type {
 
 import { compact, messageChars, reductionRatio, resolveOptions } from '../src/compact.js';
 import { olderPartCut, planTopics, summaryInstructions, touchedFiles, type TouchedFiles } from '../src/plan.js';
-import { latestRequest } from '../src/state.js';
+import { collectToolCalls, fitState, latestRequest, recentRequests } from '../src/state.js';
+import { pickRules, ruleUnits, rulesNote, rulesQuestion } from '../src/rules.js';
 import { compactionLog, logPath, type CompactionLog } from './log.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
@@ -109,6 +110,8 @@ export type HookConfig = CompactOptions & {
   decisionLog: boolean;
   /** Absent: `~/.claude/fast-jev-compaction/logs`. */
   logDir?: string;
+  /** Rule files re-added after a summary, relative to the project root; `dir/*.md` takes a folder's files. */
+  rulesFiles: string[];
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -157,6 +160,10 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       typeof options['decisionLog'] === 'boolean'
         ? options['decisionLog']
         : HOOK_DEFAULTS.decisionLog,
+    rulesFiles: (optionString(options, 'rulesFiles') ?? '')
+      .split(/[,\n]/)
+      .map((f) => f.trim())
+      .filter(Boolean),
   };
   const logDir = optionString(options, 'logDir');
   if (logDir) config.logDir = logDir;
@@ -165,6 +172,30 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
   return config;
+}
+
+/** The rule files' texts; a `dir/*.md` entry lists the folder. A file that cannot be read is skipped. */
+async function readRuleFiles(
+  fs: { read: (path: string) => Promise<unknown>; list: (path: string) => Promise<readonly { name: string; kind: string }[]> },
+  root: string,
+  entries: readonly string[],
+): Promise<{ file: string; text: string }[]> {
+  const files: string[] = [];
+  for (const entry of entries) {
+    const star = entry.match(/^(.*?)\/?\*(\.\w+)?$/);
+    if (!star) { files.push(entry); continue; }
+    const dir = star[1] ?? '';
+    const listed = await fs.list(`${root}/${dir}`).catch(() => []);
+    for (const e of [...listed].sort((a, b) => a.name.localeCompare(b.name)))
+      if (e.kind === 'file' && (!star[2] || e.name.endsWith(star[2]))) files.push(dir ? `${dir}/${e.name}` : e.name);
+  }
+  const read = await Promise.all(
+    [...new Set(files)].map(async (file) => {
+      const text = await fs.read(`${root}/${file}`).catch(() => undefined);
+      return typeof text === 'string' ? { file, text } : undefined;
+    }),
+  );
+  return read.filter((f): f is { file: string; text: string } => f !== undefined);
 }
 
 /** A `JevAsker` over the engine's `$.http.fetch`. */
@@ -406,6 +437,30 @@ export const register: Register = (on: On, options: PluginOptions) => {
         let shortening: ReturnType<typeof compactSession> | undefined;
         const shorten = () =>
           (shortening ??= compactSession(event.messages, { ...config, resultsOnly: true }, fetchFn));
+        /** The rules note for these messages and the picked units, or none when no rule file is set or readable. */
+        const rulesFor = async (messages: readonly SessionMessage[]): Promise<{ note: string; picked?: string[] }> => {
+          if (config.rulesFiles.length === 0) return { note: '' };
+          try {
+            const root = await $.session.root();
+            const units = ruleUnits(await readRuleFiles({ read: (path) => $.fs.read(path), list: (path) => $.fs.list(path) }, root, config.rulesFiles));
+            if (units.length === 0) return { note: '' };
+            const questions = rulesQuestion(units);
+            let picked: ReturnType<typeof pickRules> = [];
+            if (config.apiKey && Object.keys(questions).length > 0) {
+              const all = messages as unknown as readonly Message[];
+              const options = resolveOptions(config);
+              const goal = recentRequests(all, 200, 1000);
+              const state = fitState(all, collectToolCalls(all, options.preserveRecentMessages), { ...options, goal });
+              const answer = await jevAsker(fetchFn, config.apiKey, config.model)
+                .ask(state.state, questions)
+                .catch(() => undefined);
+              if (answer) picked = pickRules(answer.answers, units);
+            }
+            return { note: rulesNote(units, picked), picked: picked.map((u) => `${u.file} › ${u.title}`) };
+          } catch {
+            return { note: '' };
+          }
+        };
         /** The built-in summarizer over `messages[0..cut)` alone; the rest stays as it is. */
         const summarizeOlder = async (cut: number, what: string, extra: Partial<CompactionLog> = {}) => {
           const older = event.messages.slice(0, cut);
@@ -419,6 +474,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
           const total = event.messages.reduce((sum, m) => sum + messageChars(m), 0);
           const share = total > 0 ? older.reduce((sum, m) => sum + messageChars(m), 0) / total : 0;
           const started = Date.now();
+          // The project rules the next steps need, chosen by Jev while the summary is written.
+          const rules = rulesFor(event.messages);
           const instructions = summaryInstructions(ref, files);
           let summarized: { messages?: readonly SessionMessage[] } | undefined;
           let model = 'built-in';
@@ -451,9 +508,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
           }
           if (!summarized.messages) return undefined;
           const note = filesNote(files);
+          const { note: rulesText, picked } = await rules;
           const messages = [
             ...summarized.messages,
             ...(note ? [{ role: 'user', text: note, toolUses: [] } as unknown as SessionMessage] : []),
+            ...(rulesText ? [{ role: 'user', text: rulesText, toolUses: [] } as unknown as SessionMessage] : []),
             ...event.messages.slice(cut),
           ];
           notify($, `${older.length} messages ${what} summarized by ${model} in ${Math.round((Date.now() - started) / 1000)} s, ${event.messages.length - cut} kept as they are`);
@@ -471,6 +530,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
               summaryModel: model,
               summaryMs: Date.now() - started,
               summaryOutputTokens: outputTokens,
+              rulesPicked: picked,
             },
           );
           return { messages };

@@ -60,6 +60,29 @@ submits it, as your own words, once the compaction is done. After an
 automatic compaction, the plugin submits a short resume prompt instead,
 unless `resumeAfterCompact` is off.
 
+### Project rules after a summary
+
+Claude Code re-attaches `CLAUDE.md` after every compact, but the decision
+files it points to are read as tool results, and a summary drops their text.
+With `rulesFiles` set, the plugin adds a note after the summary with:
+
+- the 1–2 sections Jev picks for the work in progress, in full;
+- the introduction of each rule file;
+- an index of every section, so Claude knows what to re-read.
+
+Jev picks the sections in one request, while Haiku writes the summary, so the
+compaction takes no longer. The note is about 1,250 tokens for a project with
+five rule files and 100 sections. A file that is missing in a project is
+skipped, so one setting can serve several projects:
+
+```sh
+printf '{"rulesFiles":"CLAUDE.md, docs/decisioni/*.md"}' | claude plugin configure fast-jev-compaction@fast-jev-compaction --values-stdin
+```
+
+On 86 labelled compactions of three projects, Jev's first pick was a section
+the following work needed in 84% of the cases. The index covers the rest.
+The benchmark is in `examples/rules/`.
+
 ### Typical timings
 
 Measured on 45 compactions of real sessions, 22–24 October 2026, with
@@ -134,6 +157,7 @@ Set them with `claude plugin configure fast-jev-compaction@fast-jev-compaction`.
 | `compactAtPercent` | `0` | Context percentage at which the plugin compacts at the end of a turn; 0 leaves the timing to Claude Code |
 | `resumeAfterCompact` | `true` | Submits a resume prompt after an automatic compaction |
 | `decisionLog` | `false` | Writes one JSON record per compaction |
+| `rulesFiles` | empty | Rule files re-added after a summary, comma-separated; `dir/*.md` takes a folder |
 | `logDir` | unset | Log folder; unset is `~/.claude/fast-jev-compaction/logs` |
 
 `keepThreshold` and `lastingThreshold` still exist for the library. The

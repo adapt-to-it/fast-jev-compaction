@@ -197,11 +197,34 @@ export function latestRequest(
   return '';
 }
 
+/**
+ * The newest user requests, newest first, joined until they reach `minChars`:
+ * a short reply such as "ok, go on" carries the request it answers.
+ */
+export function recentRequests(
+  messages: readonly Pick<Message, 'role' | 'text'>[],
+  minChars = 200,
+  limit = 1000,
+): string {
+  const parts: string[] = [];
+  let size = 0;
+  for (let i = messages.length - 1; i >= 0 && size < minChars; i--) {
+    const message = messages[i]!;
+    if (message.role !== 'user') continue;
+    const text = requestText(message.text);
+    if (!text) continue;
+    parts.push(text);
+    size += text.length;
+  }
+  return parts.join('\n---\n').slice(0, limit);
+}
+
 /** Start of the line that stands for turns this mod removed. */
 export const REMOVED_TURNS_PREFIX = '[fast-jev-compaction removed ';
 
-/** User messages the engine or this mod write: never a request. */
-const NOTICE = /^(?:Tool loaded\.$|\[fast-jev-compaction removed )/;
+/** User messages the engine, a hook or this mod write (notes, summaries, Stop hook feedback): never a request. */
+const NOTICE =
+  /^(?:Tool loaded\.$|\[fast-jev-compaction(?: removed |\] )|\/[\w:-]+$|\(Re-invocation of \/|Stop hook feedback:|Base directory for this skill:|Another Claude session sent a message:|\[SYSTEM NOTIFICATION|This session is being continued from (?:a previous|an earlier) conversation)/;
 
 /** A user message's own text, without engine wrappers and notices; empty when nothing is left. */
 export function requestText(text: string): string {

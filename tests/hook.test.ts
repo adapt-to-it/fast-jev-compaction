@@ -11,7 +11,7 @@ import {
   toSessionMessages,
   renderTranscript,
 } from '../hooks/fast-jev.ts';
-import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
+import { applyDecisions, collectToolCalls, decideCall, recentRequests, type Message } from '../src/index.js';
 
 type SessionMessage = Message & { handle?: string };
 
@@ -66,9 +66,10 @@ describe('hook config', () => {
       model: 'jev-1.13.0',
       resumeAfterCompact: true,
       decisionLog: false,
+      rulesFiles: [],
     });
     expect(
-      resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no', resumeAfterCompact: false, decisionLog: false, logDir: '/tmp/l' }),
+      resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no', resumeAfterCompact: false, decisionLog: false, logDir: '/tmp/l', rulesFiles: 'CLAUDE.md, docs/decisioni/*.md\n' }),
     ).toEqual({
       apiKey: 'k',
       keepThreshold: 0.3,
@@ -83,6 +84,7 @@ describe('hook config', () => {
       resumeAfterCompact: false,
       decisionLog: false,
       logDir: '/tmp/l',
+      rulesFiles: ['CLAUDE.md', 'docs/decisioni/*.md'],
     });
   });
 });
@@ -210,6 +212,17 @@ describe('latest request', () => {
     expect(latestRequest([message('user', '<system-reminder>x</system-reminder>\nnow add docs')])).toBe('now add docs');
     expect(latestRequest([message('user', '<command-name>/x</command-name>')])).toBe('');
     expect(latestRequest([message('user', 'now add docs'), message('user', 'Tool loaded.')])).toBe('now add docs');
+    for (const note of [
+      '[fast-jev-compaction] Files used in the summarized part of the conversation (re-read any you need):\na.ts a.ts "write"',
+      'Stop hook feedback: docs/STATO.md is not up to date.',
+      'Base directory for this skill: /Users/x/.claude/skills/review\n\n# Review',
+      'Another Claude session sent a message:\n<agent-message from="a1">done</agent-message>',
+      '[SYSTEM NOTIFICATION - NOT USER INPUT] A background task finished.',
+      '/compact',
+      '(Re-invocation of /review — the skill instructions were previously loaded)',
+      'This session is being continued from an earlier conversation. The earlier part is summarized below.',
+    ])
+      expect(latestRequest([message('user', 'now add docs'), message('user', note)])).toBe('now add docs');
     expect(
       latestRequest([
         message('user', 'now add docs'),
@@ -292,5 +305,14 @@ describe('renderTranscript', () => {
     expect(text).toContain('→ Read {"file_path":"/r/a.ts"}');
     expect(text).toContain('[…1000 chars cut]');
     expect(renderTranscript(messages, 50).startsWith('[…earlier part cut]')).toBe(true);
+  });
+});
+
+describe('recent requests', () => {
+  it('joins short replies with the requests before them', () => {
+    const long = 'Rewrite the import of invoices so that every row keeps its original number and the totals match the old system to the cent.';
+    const messages = [message('user', long), message('assistant', 'Plan ready.'), message('user', 'Tool loaded.'), message('user', 'ok, go on')];
+    expect(recentRequests(messages, 40)).toBe(`ok, go on\n---\n${long}`);
+    expect(recentRequests(messages, 5)).toBe('ok, go on');
   });
 });

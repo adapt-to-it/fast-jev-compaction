@@ -33,6 +33,8 @@ export type CompactionLog = {
   summaryMs?: number;
   /** Output tokens of the summary model's reply, thinking included. */
   summaryOutputTokens?: number;
+  /** Rule units re-added in full after the summary, as `file › title`. */
+  rulesPicked?: string[];
   files?: TouchedFiles;
   decisions: Array<{
     id: string;
