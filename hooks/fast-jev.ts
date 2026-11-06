@@ -302,6 +302,23 @@ export function filesNote(files: TouchedFiles): string {
   return `[fast-jev-compaction] Files used in the summarized part of the conversation (re-read any you need):\n${lines.join('\n')}`;
 }
 
+/** The reply-language rule of the `language` setting, or '' when it is not set. */
+export function languageNote(language: unknown): string {
+  if (typeof language !== 'string' || !language.trim()) return '';
+  return `[fast-jev-compaction] Always respond in ${language.trim()}, short status lines between tool calls included.`;
+}
+
+/**
+ * `messages` with `note` as a user message near the end: last, or before a
+ * closing assistant message with tool calls (its results must follow it).
+ */
+export function withNote(messages: readonly SessionMessage[], note: string): SessionMessage[] {
+  const message = { role: 'user', text: note, toolUses: [] } as unknown as SessionMessage;
+  const last = messages[messages.length - 1];
+  const at = last && last.role === 'assistant' && last.toolUses.length > 0 ? messages.length - 1 : messages.length;
+  return [...messages.slice(0, at), message, ...messages.slice(at)];
+}
+
 function percent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
@@ -593,8 +610,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
         if (!isPrecompute) $.ui.status(undefined);
       }
     })();
-    if (followUp && outcome.messages) void $.prompt.submit({ text: followUp, asUser: true });
-    return outcome;
+    // The engine sends the language rule once per session: a compaction can summarize it away.
+    let final = outcome;
+    if (event.trigger !== 'precompute' && outcome.messages) {
+      const settings = await $.settings.read().catch(() => ({}) as Readonly<Record<string, unknown>>);
+      const note = languageNote(settings['language']);
+      if (note) final = { ...outcome, messages: withNote(outcome.messages, note) };
+    }
+    if (followUp && final.messages) void $.prompt.submit({ text: followUp, asUser: true });
+    return final;
   }).catch(($, event, next) => {
     // A hook that threw or overran its budget: the built-in summary takes over.
     $.ui.status(undefined);

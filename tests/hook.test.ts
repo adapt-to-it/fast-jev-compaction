@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { compactionLog, latestRequest, logPath } from '../hooks/log.js';
 import {
   filesNote,
+  languageNote,
+  withNote,
   jevAsker,
   compactSession,
   reusePrecomputed,
@@ -314,5 +316,23 @@ describe('recent requests', () => {
     const messages = [message('user', long), message('assistant', 'Plan ready.'), message('user', 'Tool loaded.'), message('user', 'ok, go on')];
     expect(recentRequests(messages, 40)).toBe(`ok, go on\n---\n${long}`);
     expect(recentRequests(messages, 5)).toBe('ok, go on');
+  });
+});
+
+describe('language note', () => {
+  const msg = (role: 'user' | 'assistant', text: string, tools = 0) =>
+    ({ role, text, toolUses: Array.from({ length: tools }, (_, i) => ({ tool_use_id: `t${i}` })) }) as never;
+
+  it('names the language of the setting, or nothing', () => {
+    expect(languageNote('Italian')).toContain('Always respond in Italian');
+    expect(languageNote('')).toBe('');
+    expect(languageNote(undefined)).toBe('');
+  });
+
+  it('goes last, or before a closing assistant message with tool calls', () => {
+    const plain = withNote([msg('user', 'a'), msg('assistant', 'b')], 'N');
+    expect(plain.map((m: { text: string }) => m.text)).toEqual(['a', 'b', 'N']);
+    const open = withNote([msg('user', 'a'), msg('assistant', 'b', 1)], 'N');
+    expect(open.map((m: { text: string }) => m.text)).toEqual(['a', 'N', 'b']);
   });
 });

@@ -96,6 +96,13 @@ contexts of about 370,000 tokens:
 
 The built-in compact took 36–78 s on the same sessions before.
 
+### Reply language after a compaction
+
+Claude Code sends the reply-language rule (the `language` setting) once per
+session. A compaction can summarize it away. When `language` is set, the plugin
+adds the rule as a short note at the end of the compacted conversation, so the
+next replies keep the language.
+
 ## Install
 
 The plugin needs Claude Code with function hooks (2.1.301 or later). On
