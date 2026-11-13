@@ -399,6 +399,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
   let precomputed: Precomputed | undefined;
 
   on('session.compact', async ($, event, next) => {
+    // A subagent's compaction goes to the engine as it is.
+    if (event.agentId !== undefined) return next(event);
     // The text after `/compact` is the next prompt: it runs once the compaction stands.
     const followUp =
       event.trigger === 'manual' && event.agentId === undefined ? event.instructions?.trim() : undefined;
